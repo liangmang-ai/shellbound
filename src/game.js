@@ -1,12 +1,14 @@
 // Original, platform-independent game simulation. All coordinates are world pixels.
 export const MAX_WAVES = 10;
-export const WEAPON_ORDER = ['pistol', 'smg', 'rifle', 'lmg', 'sniper'];
+export const BOSS_ATTACK = Object.freeze({ interval: 4, windup: 0.85, bulletSpeed: 310, damage: 18, radius: 7, life: 5, spread: 0.18 });
+export const WEAPON_ORDER = ['pistol', 'smg', 'rifle', 'lmg', 'sniper', 'shotgun'];
 export const WEAPONS = Object.freeze({
   pistol: { label: '啵啵手枪', clipSize: 12, reserveMax: Infinity, damage: 22, fireInterval: 0.24, reloadTime: 0.85, bulletSpeed: 950, spread: 0.025, piercing: 1, color: '#ffe5ad' },
   smg: { label: '跳豆冲锋枪', clipSize: 30, reserveMax: 150, damage: 15, fireInterval: 0.075, reloadTime: 1.15, bulletSpeed: 900, spread: 0.11, piercing: 1, color: '#7ee8df' },
   rifle: { label: '薄荷步枪', clipSize: 24, reserveMax: 120, damage: 34, fireInterval: 0.16, reloadTime: 1.25, bulletSpeed: 1200, spread: 0.035, piercing: 1, color: '#a5ed8b' },
   lmg: { label: '爆米花机枪', clipSize: 70, reserveMax: 280, damage: 24, fireInterval: 0.09, reloadTime: 2.2, bulletSpeed: 1100, spread: 0.085, piercing: 1, color: '#ffbe76' },
   sniper: { label: '星光大狙', clipSize: 5, reserveMax: 30, damage: 140, fireInterval: 0.85, reloadTime: 1.7, bulletSpeed: 2200, spread: 0, piercing: 4, color: '#c9b5ff' },
+  shotgun: { label: '脆壳霰弹枪', clipSize: 6, reserveMax: 36, damage: 16, fireInterval: 0.8, reloadTime: 1.6, bulletSpeed: 950, spread: 0.30, piercing: 1, pellets: 7, range: 300, falloffStart: 80, minDamageRatio: 0.4, color: '#ffad84' },
 });
 
 export const MAPS = [
@@ -37,7 +39,13 @@ const ENEMY_TYPES = {
   runner: { radius: 14, hp: 28, speed: 116, damage: 9, score: 15 },
   tank: { radius: 25, hp: 170, speed: 44, damage: 22, score: 35 },
 };
-const UNLOCKS = { 1: 'smg', 3: 'rifle', 5: 'lmg', 7: 'sniper' };
+export function getWaveComposition(wave) {
+  const level = clamp(Math.floor(finite(wave, 1)), 1, MAX_WAVES);
+  const regularCount = 5 + level * 3;
+  const tankCount = Math.floor((level - 1) / 2);
+  return { regularCount, tankCount, total: regularCount + tankCount };
+}
+const UNLOCKS = { 1: 'smg', 2: 'shotgun', 3: 'rifle', 5: 'lmg', 7: 'sniper' };
 const TAU = Math.PI * 2;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const distanceSquared = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
@@ -175,17 +183,18 @@ export class Game {
     if (this.status !== 'intermission' || this.wave >= MAX_WAVES) return false;
     this.wave += 1;
     this.waveKills = 0;
-    this.waveTotal = 5 + this.wave * 3;
+    const composition = getWaveComposition(this.wave);
+    this.waveTotal = composition.total;
     this.status = 'playing';
     this.intermissionRemaining = 0;
     this.spawnTimer = 0.25;
     this.spawnQueue = [];
-    for (let i = 0; i < this.waveTotal; i++) {
+    for (let i = 0; i < composition.regularCount; i++) {
       const roll = this.random();
-      const type = this.wave >= 3 && roll < 0.12 + this.wave * 0.013 ? 'tank'
-        : this.wave >= 2 && roll < 0.35 + this.wave * 0.018 ? 'runner' : 'grunt';
+      const type = this.wave >= 2 && roll < 0.35 + this.wave * 0.018 ? 'runner' : 'grunt';
       this.spawnQueue.push(type);
     }
+    for (let i = 0; i < composition.tankCount; i++) this.spawnQueue.splice(i * 5, 0, 'tank');
     this.events.push({ type: 'wave', wave: this.wave });
     return true;
   }
@@ -259,9 +268,10 @@ export class Game {
     if (this.status === 'playing') {
       if (input.shoot) this.fire();
       this.updateSpawns(dt);
-      this.updateEnemies(dt);
+      // Resolve player attacks before a defeated boss can finish its wind-up.
       this.updateBullets(dt);
       this.updateGrenades(dt);
+      this.updateEnemies(dt);
     }
     this.updatePickups(dt);
     for (const effect of this.effects) effect.life -= dt;
@@ -288,18 +298,24 @@ export class Game {
       shots += 1;
       ammo.clip -= 1;
       ammo.cooldown += def.fireInterval;
-      const angle = p.angle + (this.random() * 2 - 1) * def.spread;
-      const offset = p.radius + 9;
-      const muzzleX = p.x + Math.cos(angle) * offset;
-      const muzzleY = p.y + Math.sin(angle) * offset;
-      // Keep the muzzle in the arena and prevent shooting through an adjacent wall.
-      const muzzleBlocked = this.map.obstacles.some(rect => segmentRect(p.x, p.y, muzzleX, muzzleY, rect) !== null);
-      const x = muzzleBlocked ? p.x : muzzleX, y = muzzleBlocked ? p.y : muzzleY;
-      this.bullets.push({ id: this.nextId++, x, y, prevX: x, prevY: y, radius: 3,
-        vx: Math.cos(angle) * def.bulletSpeed, vy: Math.sin(angle) * def.bulletSpeed,
-        damage: def.damage, remainingHits: def.piercing, hitIds: new Set(),
-        owner: 'player', weapon: id, life: id === 'sniper' ? 1.1 : 0.95 });
-      this.events.push({ type: 'shot', weaponId: id, x, y });
+      const pellets = def.pellets || 1;
+      for (let pellet = 0; pellet < pellets; pellet++) {
+        const spread = pellets === 1 ? (this.random() * 2 - 1) * def.spread
+          : (pellet / (pellets - 1) * 2 - 1) * def.spread;
+        const angle = p.angle + spread;
+        const offset = p.radius + 9;
+        const muzzleX = p.x + Math.cos(angle) * offset;
+        const muzzleY = p.y + Math.sin(angle) * offset;
+        // Keep the muzzle in the arena and prevent shooting through an adjacent wall.
+        const muzzleBlocked = this.map.obstacles.some(rect => segmentRect(p.x, p.y, muzzleX, muzzleY, rect) !== null);
+        const x = muzzleBlocked ? p.x : muzzleX, y = muzzleBlocked ? p.y : muzzleY;
+        this.bullets.push({ id: this.nextId++, x, y, prevX: x, prevY: y, radius: 3,
+          vx: Math.cos(angle) * def.bulletSpeed, vy: Math.sin(angle) * def.bulletSpeed,
+          damage: def.damage, remainingHits: def.piercing, hitIds: new Set(),
+          owner: 'player', weapon: id, distanceTravelled: 0, maxRange: def.range,
+          life: def.range ? def.range / def.bulletSpeed : id === 'sniper' ? 1.1 : 0.95 });
+        if (pellet === 0) this.events.push({ type: 'shot', weaponId: id, x, y });
+      }
     }
     if (ammo.clip === 0) this.tryReload();
   }
@@ -315,6 +331,13 @@ export class Game {
     const enemy = { id: this.nextId++, x: point.x, y: point.y, type, radius: def.radius,
       hp, maxHp: hp, speed: def.speed * (1 + (this.wave - 1) * 0.025),
       damage: def.damage, angle: 0, hitFlash: 0 };
+    if (type === 'tank') {
+      enemy.rangedCooldown = BOSS_ATTACK.interval - BOSS_ATTACK.windup;
+      enemy.rangedCharge = 0;
+      enemy.rangedWindup = BOSS_ATTACK.windup;
+      enemy.attackAngle = 0;
+      this.events.push({ type: 'bossSpawn', wave: this.wave });
+    }
     this.enemies.push(enemy);
     this.spawnTimer += Math.max(0.24, 0.7 - this.wave * 0.036);
   }
@@ -398,30 +421,68 @@ export class Game {
     this.navigationTimer -= dt;
     if (this.navigationTimer <= 0) { this.flowFields.clear(); this.navigationTimer = 0.4; }
     for (const enemy of this.enemies) {
+      if (enemy.hp <= 0) continue;
       enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
+      const charging = this.updateRangedAttack(enemy, dt);
+      enemy.angle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
+      if (charging) continue;
       const target = this.navigationTarget(enemy);
       let dx = target.x - enemy.x, dy = target.y - enemy.y;
       const length = Math.hypot(dx, dy);
       if (length > 1) { dx /= length; dy /= length; } else { dx = 0; dy = 0; }
-      enemy.angle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
       this.moveBody(enemy, dx * enemy.speed * dt, dy * enemy.speed * dt);
     }
     // Soft separation reduces visual stacking; enemies never become solid player walls.
     for (let i = 0; i < this.enemies.length; i++) for (let j = i + 1; j < this.enemies.length; j++) {
       const a = this.enemies[i], b = this.enemies[j];
+      if (a.hp <= 0 || b.hp <= 0) continue;
       let dx = a.x - b.x, dy = a.y - b.y, d = Math.hypot(dx, dy);
       const min = (a.radius + b.radius) * 0.82;
       if (d >= min) continue;
       if (d < 0.01) { dx = (a.id % 2 ? 1 : -1); dy = 0.5; d = Math.hypot(dx, dy); }
       const push = Math.min(2.5, (min - d) * 0.2);
-      this.moveBody(a, dx / d * push, dy / d * push);
-      this.moveBody(b, -dx / d * push, -dy / d * push);
+      if (!(a.rangedCharge > 0)) this.moveBody(a, dx / d * push, dy / d * push);
+      if (!(b.rangedCharge > 0)) this.moveBody(b, -dx / d * push, -dy / d * push);
     }
     if (this.player.invulnerability <= 0) {
       // At most one touch hit per grace interval, independent of crowd size.
-      const contact = this.enemies.find(enemy => distanceSquared(enemy, this.player) < (enemy.radius + this.player.radius - 2) ** 2);
+      const contact = this.enemies.find(enemy => enemy.hp > 0 && distanceSquared(enemy, this.player) < (enemy.radius + this.player.radius - 2) ** 2);
       if (contact) this.damagePlayer(contact.damage);
     }
+  }
+
+  updateRangedAttack(enemy, dt) {
+    if (enemy.type !== 'tank' || enemy.hp <= 0) return false;
+    if (enemy.rangedCharge > 0) {
+      const remaining = enemy.rangedCharge - dt;
+      enemy.rangedCharge = Math.max(0, remaining);
+      if (remaining <= 0) {
+        this.fireBossVolley(enemy);
+        enemy.rangedCooldown = BOSS_ATTACK.interval - BOSS_ATTACK.windup + remaining;
+      }
+      return true;
+    }
+    enemy.rangedCooldown = finite(enemy.rangedCooldown, BOSS_ATTACK.interval - BOSS_ATTACK.windup) - dt;
+    if (enemy.rangedCooldown <= 0) {
+      enemy.attackAngle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
+      enemy.rangedWindup = BOSS_ATTACK.windup;
+      enemy.rangedCharge = BOSS_ATTACK.windup + enemy.rangedCooldown;
+      enemy.rangedCooldown = 0;
+      this.events.push({ type: 'bossCharge', enemyId: enemy.id });
+      return true;
+    }
+    return false;
+  }
+
+  fireBossVolley(enemy) {
+    for (const spread of [-BOSS_ATTACK.spread, 0, BOSS_ATTACK.spread]) {
+      const angle = enemy.attackAngle + spread;
+      // Starting at the body center means a close wall cannot be bypassed by the muzzle.
+      this.bullets.push({ id: this.nextId++, x: enemy.x, y: enemy.y, prevX: enemy.x, prevY: enemy.y,
+        radius: BOSS_ATTACK.radius, vx: Math.cos(angle) * BOSS_ATTACK.bulletSpeed, vy: Math.sin(angle) * BOSS_ATTACK.bulletSpeed,
+        damage: BOSS_ATTACK.damage, remainingHits: 1, hitIds: new Set(), owner: 'enemy', weapon: 'bossOrb', life: BOSS_ATTACK.life });
+    }
+    this.events.push({ type: 'bossVolley', enemyId: enemy.id });
   }
 
   damagePlayer(amount) {
@@ -437,11 +498,33 @@ export class Game {
   updateBullets(dt) {
     for (const bullet of this.bullets) {
       bullet.prevX = bullet.x; bullet.prevY = bullet.y;
-      const nx = bullet.x + bullet.vx * dt, ny = bullet.y + bullet.vy * dt;
+      const speed = Math.hypot(bullet.vx, bullet.vy);
+      const travelled = finite(bullet.distanceTravelled);
+      const rangeRemaining = Number.isFinite(bullet.maxRange) ? Math.max(0, bullet.maxRange - travelled) : Infinity;
+      const travelDt = Math.min(dt, Math.max(0, bullet.life), speed > 0 ? rangeRemaining / speed : dt);
+      if (travelDt <= 0) { bullet.life = 0; continue; }
+      const nx = bullet.x + bullet.vx * travelDt, ny = bullet.y + bullet.vy * travelDt;
+      const stepDistance = speed * travelDt;
       let wallT = 1;
       for (const rect of this.map.obstacles) {
         const t = segmentRect(bullet.x, bullet.y, nx, ny, rect, bullet.radius);
         if (t !== null) wallT = Math.min(wallT, t);
+      }
+      if (bullet.owner === 'enemy') {
+        const p = this.player;
+        const playerT = segmentCircle(bullet.x, bullet.y, nx, ny, p.x, p.y, p.radius + bullet.radius);
+        let endT = wallT;
+        if (playerT !== null && playerT < wallT) {
+          if (p.hp > 0 && p.invulnerability <= 0) this.damagePlayer(bullet.damage);
+          endT = playerT;
+          bullet.life = 0;
+        }
+        bullet.x += (nx - bullet.x) * endT;
+        bullet.y += (ny - bullet.y) * endT;
+        bullet.distanceTravelled = travelled + stepDistance * endT;
+        bullet.life -= dt;
+        if (wallT < 1 || bullet.x < 0 || bullet.y < 0 || bullet.x > this.map.width || bullet.y > this.map.height) bullet.life = 0;
+        continue;
       }
       const hits = [];
       for (const enemy of this.enemies) {
@@ -452,14 +535,20 @@ export class Game {
       hits.sort((a, b) => a.t - b.t);
       let endT = wallT;
       for (const { enemy, t } of hits) {
-        this.damageEnemy(enemy, bullet.damage);
+        const def = WEAPONS[bullet.weapon];
+        const hitDistance = travelled + stepDistance * t;
+        const falloff = def?.falloffStart === undefined ? 1
+          : clamp(1 - (hitDistance - def.falloffStart) / (def.range - def.falloffStart) * (1 - def.minDamageRatio), def.minDamageRatio, 1);
+        this.damageEnemy(enemy, bullet.damage * falloff);
         bullet.hitIds.add(enemy.id);
         bullet.remainingHits -= 1;
         if (bullet.remainingHits <= 0) { endT = t; bullet.life = 0; break; }
       }
       bullet.x += (nx - bullet.x) * endT;
       bullet.y += (ny - bullet.y) * endT;
+      bullet.distanceTravelled = travelled + stepDistance * endT;
       bullet.life -= dt;
+      if (Number.isFinite(bullet.maxRange) && bullet.distanceTravelled >= bullet.maxRange - 1e-7) bullet.life = 0;
       if (wallT < 1 || bullet.x < 0 || bullet.y < 0 || bullet.x > this.map.width || bullet.y > this.map.height) bullet.life = 0;
     }
     this.bullets = this.bullets.filter(bullet => bullet.life > 0);

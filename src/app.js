@@ -1,9 +1,9 @@
-import { Game, MAPS, WEAPONS } from './game.js';
+import { Game, MAPS, WEAPONS, WEAPON_ORDER } from './game.js';
 import { drawArena, drawEgg } from './render.js';
 
 const C = { bg: '#101e25', panel: '#1b2c33', line: '#31434a', ink: '#f4f1e5', muted: '#91a5aa', lime: '#c7ed83', teal: '#8dd4c2', coral: '#f6a38d' };
 const FONT = '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
-const weaponIds = ['pistol', 'smg', 'rifle', 'lmg', 'sniper'];
+const weaponIds = WEAPON_ORDER;
 const mapLabels = { courtyard: ['薄荷庭院', '开阔中央 · 灵活绕行', 'MINT COURTYARD'], greenhouse: ['落日温室', '交错掩体 · 守住通道', 'SUNSET GREENHOUSE'] };
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 
@@ -97,14 +97,14 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       text('握紧武器，穿过包围。', 65, 397, 20, C.muted);
       text('选一张地图，迎接十波攻势。', 65, 430, 20, C.muted);
       drawPoster(311, 589, 1.24);
-      text('5 种枪械', 64, 740, 15, C.ink, 650);
+      text('6 种枪械', 64, 740, 15, C.ink, 650);
       text('盾牌防御', 195, 740, 15, C.ink, 650);
       text('手雷清场', 325, 740, 15, C.ink, 650);
       text('选择战区', 713, 143, 27, C.ink, 750);
       text('每张地图，都是一种新的走位。', 713, 178, 15, C.muted);
     } else {
       text('守住最后', 37, 132, 49, C.ink, 800); text('一颗蛋。', 37, 191, 49, C.lime, 800);
-      text('原创角色 / 十波攻势 / 五种枪械', 40, 251, 16, C.muted);
+      text('原创角色 / 十波攻势 / 六种枪械', 40, 251, 16, C.muted);
       drawPoster(229, 375, .84);
       text('盾牌挡伤害 · 手雷破包围', 40, h - 32, 16, C.teal, 650);
     }
@@ -135,11 +135,11 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text(`第 ${String(game.wave).padStart(2, '0')} / 10 波`, w - (compact ? 355 : 400), sy + 2, compact ? 18 : 21, C.lime, 750);
     text(`${game.score} 分`, w - 175, sy + 2, 18, C.ink, 650, 'right');
     button(w - 143, compact ? 20 : 27, 110, 38, 'Ⅱ  暂停', togglePause, { fontSize: 15 });
-    const bottom = h - (compact ? 74 : 112), margin = 33, weaponW = compact ? 111 : 152, weaponGap = 9;
+    const bottom = h - (compact ? 74 : 112), margin = 33, weaponW = compact ? 96 : 132, weaponGap = compact ? 5 : 8;
     weaponIds.forEach((id, i) => {
       const owned = p.weapons[id], selected = p.currentWeapon === id, x = margin + i * (weaponW + weaponGap);
       rounded(x, bottom, weaponW, compact ? 56 : 65, 10, selected ? '#314538' : C.panel, selected ? C.lime : C.line);
-      text(`${i + 1}  ${WEAPONS[id].label}`, x + 11, bottom + 17, compact ? 14 : 16, owned ? C.ink : '#637a80', 650);
+      text(`${i + 1}  ${WEAPONS[id].label}`, x + 9, bottom + 17, compact ? 12 : 14, owned ? C.ink : '#637a80', 650);
       let label = '等待补给';
       if (owned) label = owned.reloadRemaining > 0 ? '换弹中…' : `${owned.clip} / ${id === 'pistol' ? '∞' : owned.reserve}`;
       text(label, x + 11, bottom + (compact ? 39 : 45), 13, selected ? C.lime : owned ? C.muted : '#637a80', 600);
@@ -148,7 +148,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const bx = w - (compact ? 309 : 381), bh = compact ? 56 : 65;
     button(bx, bottom, compact ? 101 : 112, bh, 'R  换弹', () => { actions.reload = true; }, { fontSize: 15 });
     button(bx + (compact ? 111 : 124), bottom, compact ? 165 : 224, bh, `G  手雷  ×${p.grenades}`, () => { actions.grenade = true; }, { fill: '#3b3930', border: '#70624b', color: '#efcc92', fontSize: compact ? 17 : 19 });
-    if (!compact) { text('WASD 移动    鼠标瞄准 / 左键射击    1–5 换枪    Q 轮换', 34, h - 24, 12, C.muted); text('盾牌自动抵挡伤害', w - 36, h - 24, 12, C.teal, 500, 'right'); }
+    if (!compact) { text('WASD 移动    鼠标瞄准 / 左键射击    1–6 换枪    Q 轮换', 34, h - 24, 12, C.muted); text('盾牌自动抵挡伤害', w - 36, h - 24, 12, C.teal, 500, 'right'); }
   }
   function drawStick(role, x, y) {
     const touch = [...touches.values()].find(t => t.role === role), base = touch?.base || { x, y }, r = 46;
@@ -163,13 +163,21 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     rounded(arena.x - 7, arena.y - 7, arena.w + 14, arena.h + 14, 16, '#20353a', C.line);
     ctx.save(); ctx.translate(arena.x, arena.y); ctx.scale(arena.scale, arena.scale); drawArena(ctx, game, { time: clock * 1000 }); ctx.restore();
     drawHUD();
+    const bosses = game.enemies.filter(enemy => enemy.type === 'tank' && enemy.hp > 0);
+    const boss = bosses.find(enemy => enemy.rangedCharge > 0) || bosses[0];
+    if (boss) {
+      const bw = layout.compact ? 270 : 340, bx = (layout.w - bw) / 2, by = arena.y + 14;
+      rounded(bx, by, bw, 45, 12, 'rgba(16,30,37,.88)', '#aa8fbb');
+      text(boss.rangedCharge > 0 ? `BOSS ×${bosses.length} · 预警！侧移躲避` : `重甲 BOSS ×${bosses.length} · 留意远程预警`, layout.w / 2, by + 14, 13, boss.rangedCharge > 0 ? C.coral : '#d3b9ed', 750, 'center');
+      bar(bx + 15, by + 30, bw - 30, bosses.reduce((sum, enemy) => sum + enemy.hp, 0), bosses.reduce((sum, enemy) => sum + enemy.maxHp, 0), '#cba3eb');
+    }
     if (platform === 'wechat' || touches.size || layout.compact) { drawStick('move', 109, layout.h - 173); drawStick('aim', layout.w - 109, layout.h - 173); }
     if (pointer && !paused && !help && screen === 'game') {
       ctx.beginPath(); ctx.arc(pointer.x, pointer.y, 10, 0, Math.PI * 2); ctx.strokeStyle = C.lime; ctx.lineWidth = 1.5; ctx.stroke();
       line(pointer.x - 16, pointer.y, pointer.x - 7, pointer.y, C.lime); line(pointer.x + 7, pointer.y, pointer.x + 16, pointer.y, C.lime);
       line(pointer.x, pointer.y - 16, pointer.x, pointer.y - 7, C.lime); line(pointer.x, pointer.y + 7, pointer.x, pointer.y + 16, C.lime);
     }
-    if (toastUntil > clock && !paused && !help && game.status === 'playing') {
+    if (toastUntil > clock && !paused && !help && game.status === 'playing' && !boss) {
       const tw = Math.min(490, toast.length * 16 + 44); rounded(layout.w / 2 - tw / 2, arena.y + 15, tw, 38, 19, 'rgba(16,30,37,.86)');
       text(toast, layout.w / 2, arena.y + 34, 15, C.ink, 600, 'center');
     }
@@ -209,7 +217,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const rows = [
       ['移动与射击', '电脑：WASD / 方向键移动，鼠标瞄准，左键射击'],
       ['手机操作', '左摇杆移动；拖动右摇杆，瞄准并持续开火'],
-      ['武器管理', '1–5 换枪 / Q 轮换 / R 换弹，也可点击下方武器卡'],
+      ['武器管理', '1–6 换枪 / Q 轮换 / R 换弹，也可点击下方武器卡'],
       ['盾牌与手雷', '盾牌先吸收伤害；G 扔手雷，也可点击手雷按钮'],
       ['补给与闯关', '捡新枪解锁，重复枪补弹；每波清关都有补给'],
       ['最后的保障', '手枪备用弹药无限，但弹匣用完仍需换弹'],
@@ -260,7 +268,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (k === 'r') actions.reload = true;
     if (k === 'g') actions.grenade = true;
     if (k === 'q' || k === 'Tab') actions.weaponNext = true;
-    if (/^[1-5]$/.test(k)) actions.weaponSlot = weaponIds[Number(k) - 1];
+    if (/^[1-6]$/.test(k)) actions.weaponSlot = weaponIds[Number(k) - 1];
   }
   function handleTouch(type, changedTouches) {
     for (const touch of changedTouches) {
@@ -297,7 +305,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (help) drawHelp();
   }
   function getSnapshot() {
-    return { screen, paused, help, selectedMap, best, layout: { ...layout }, buttons: buttons.map(({ x, y, w, h, label }) => ({ x, y, w, h, label })), game: game ? { status: game.status, wave: game.wave, score: game.score, time: game.time, kills: game.kills, mapId: game.map.id, enemyCount: game.enemies.length, bulletCount: game.bullets.length, grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
+    return { screen, paused, help, selectedMap, best, layout: { ...layout }, buttons: buttons.map(({ x, y, w, h, label }) => ({ x, y, w, h, label })), game: game ? { status: game.status, wave: game.wave, score: game.score, time: game.time, kills: game.kills, mapId: game.map.id, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
   }
   resize({ width, height, pixelRatio });
   return { frame, resize, handleTouch, handleKey, handlePointer, pause, resume, getSnapshot };

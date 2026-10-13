@@ -21,6 +21,16 @@ try {
   await page.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.__shellbound?.getSnapshot().buttons.length > 0);
   const snapshot = () => page.evaluate(() => window.__shellbound.getSnapshot());
+  const checkWeaponBar = state => {
+    const gunLabels = ['啵啵手枪', '跳豆冲锋枪', '薄荷步枪', '爆米花机枪', '星光大狙', '脆壳霰弹枪'];
+    const cards = gunLabels.map(label => state.buttons.find(button => button.label.includes(label)));
+    assert.ok(cards.every(Boolean), 'All six weapon cards must be available');
+    const reload = state.buttons.find(button => button.label.includes('换弹'));
+    for (let i = 0; i < cards.length; i++) {
+      const next = cards[i + 1] || reload;
+      assert.ok(cards[i].x + cards[i].w <= next.x, 'Weapon cards must not overlap each other or reload');
+    }
+  };
   const clickLabel = async (label) => {
     await page.waitForFunction(label => window.__shellbound.getSnapshot().buttons.some(button => button.label.includes(label)), label);
     const state = await snapshot();
@@ -37,6 +47,7 @@ try {
   await clickLabel('落日温室'); assert.equal((await snapshot()).selectedMap, 'greenhouse');
   await clickLabel('开始突围');
   let state = await snapshot(); assert.equal(state.screen, 'game'); assert.equal(state.game.mapId, 'greenhouse');
+  checkWeaponBar(state);
   const initialX = state.game.player.x;
   await page.keyboard.down('d'); await page.waitForFunction(x => window.__shellbound.getSnapshot().game.player.x > x + 30, initialX); await page.keyboard.up('d');
   state = await snapshot(); assert.ok(state.game.player.x > initialX + 20, `Keyboard movement must move player: ${JSON.stringify({initialX,game:state.game,paused:state.paused,help:state.help})}`);
@@ -74,6 +85,7 @@ try {
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [t(151, 367, 1), t(816, 350, 2)] });
   await mobile.waitForTimeout(450);
   let ms = await mobile.evaluate(() => window.__shellbound.getSnapshot());
+  checkWeaponBar(ms);
   assert.ok(ms.game.player.x > mobileX + 25, 'Left touch stick must move player');
   assert.ok(ms.game.player.weapons.pistol.clip < 12, 'Right touch stick must fire');
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
@@ -84,7 +96,7 @@ try {
   const portraitTime = (await mobile.evaluate(() => window.__shellbound.getSnapshot())).game.time;
   await mobile.waitForTimeout(180); assert.equal((await mobile.evaluate(() => window.__shellbound.getSnapshot())).game.time, portraitTime, 'Portrait rotation must freeze game');
   assert.deepEqual(errors, [], 'Browser must not raise runtime errors');
-  console.log('浏览器检查通过：地图选择、键鼠射击、换弹、手雷、暂停/重开、双摇杆触控、横竖屏。');
+  console.log('浏览器检查通过：地图选择、六把武器布局、键鼠射击、换弹、手雷、暂停/重开、双摇杆触控、横竖屏。');
   console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/mobile.png');
 } finally {
   await browser?.close();

@@ -142,7 +142,7 @@ test('wave cleanup clears live attacks, grants supplies and all weapons by wave 
     game.startNextWave();
   }
   assert.equal(game.wave, 8);
-  assert.deepEqual(Object.keys(game.player.weapons), ['pistol', 'smg', 'rifle', 'lmg', 'sniper']);
+  assert.deepEqual(Object.keys(game.player.weapons), ['pistol', 'smg', 'shotgun', 'rifle', 'lmg', 'sniper']);
 });
 
 test('ten cleared waves produce victory and terminal states do not advance', () => {

@@ -1,4 +1,6 @@
 // Original procedural artwork; no external game assets or copied map graphics.
+import { BOSS_ATTACK, segmentRect } from './game.js';
+
 const TAU = Math.PI * 2;
 const ink = '#243c48';
 const themes = {
@@ -6,7 +8,7 @@ const themes = {
   greenhouse: { floor: '#e7b3a5', tile: '#d9a498', edge: '#b9857b', cover: '#84b7a3', front: '#508875', detail: '#b7d9c3', moss: '#d69b8e' },
 };
 const colors = { grunt: '#a6d884', runner: '#ffb965', tank: '#bba0dc' };
-const marks = { pistol: 'P', smg: 'S', rifle: 'R', lmg: 'M', sniper: 'N' };
+const marks = { pistol: 'P', smg: 'S', shotgun: 'B', rifle: 'R', lmg: 'M', sniper: 'N' };
 const num = (v, fallback = 0) => Number.isFinite(v) ? v : fallback;
 
 function roundRect(ctx, x, y, w, h, r = 8) {
@@ -22,9 +24,19 @@ function circle(ctx, x, y, r, fill, stroke, width = 2) {
   if (stroke) { ctx.lineWidth = width; ctx.strokeStyle = stroke; ctx.stroke(); }
 }
 function gun(ctx, weapon, color = ink) {
-  const lengths = { pistol: 23, smg: 28, rifle: 35, lmg: 37, sniper: 43 };
+  const lengths = { pistol: 23, smg: 28, shotgun: 28, rifle: 35, lmg: 37, sniper: 43 };
   const length = lengths[weapon] || 24;
   ctx.fillStyle = '#d6a166'; roundRect(ctx, 9, -6, 12, 12, 4); ctx.fill();
+  if (weapon === 'shotgun') {
+    ctx.fillStyle = color; roundRect(ctx, 17, -8, 15, 16, 3); ctx.fill();
+    ctx.fillStyle = '#b77955'; roundRect(ctx, 19, -7, 8, 14, 2); ctx.fill();
+    ctx.fillStyle = '#617e85';
+    roundRect(ctx, 26, -8, length - 19, 6, 2); ctx.fill();
+    roundRect(ctx, 26, 2, length - 19, 6, 2); ctx.fill();
+    ctx.fillStyle = '#243c48'; roundRect(ctx, length + 4, -7, 3, 4, 1); ctx.fill();
+    roundRect(ctx, length + 4, 3, 3, 4, 1); ctx.fill();
+    return;
+  }
   ctx.fillStyle = color; roundRect(ctx, 17, -5, length - 14, 10, 3); ctx.fill();
   ctx.fillStyle = '#48616a'; roundRect(ctx, 20, -5, Math.max(7, length - 23), 3, 1); ctx.fill();
   ctx.fillStyle = '#6d8388'; roundRect(ctx, length - 2, -3, 9, 6, 2); ctx.fill();
@@ -154,6 +166,43 @@ function effect(ctx, e) {
   ctx.restore();
 }
 
+// Stop the warning at the same cover that blocks a shot. The ray starts at the
+// enemy center, so a charge beside cover never suggests that a shot passes it.
+function warningLength(enemy, map, angle) {
+  const x = num(enemy.x), y = num(enemy.y), dx = Math.cos(angle), dy = Math.sin(angle);
+  let length = Math.min(650, Math.hypot(num(map.width, 1280), num(map.height, 760)));
+  for (const rect of map.obstacles || []) {
+    const cover = { x: num(rect.x), y: num(rect.y), w: num(rect.w, num(rect.width, 80)), h: num(rect.h, num(rect.height, 80)) };
+    const hit = segmentRect(x, y, x + dx * length, y + dy * length, cover, BOSS_ATTACK.radius);
+    if (hit !== null) length *= hit;
+  }
+  return length;
+}
+
+function rangedWarning(ctx, enemy, map, t) {
+  const charge = num(enemy.rangedCharge);
+  if (charge <= 0) return;
+  const progress = Math.max(0, Math.min(1, 1 - charge / Math.max(.001, num(enemy.rangedWindup, BOSS_ATTACK.windup))));
+  const angle = num(enemy.attackAngle, num(enemy.angle)), radius = Math.max(1, num(enemy.radius, 25));
+  const pulse = .5 + .5 * Math.sin(t * 19);
+  ctx.save(); ctx.translate(num(enemy.x), num(enemy.y));
+  circle(ctx, 0, 0, radius + 9 + progress * 8, '#ff805128', '#fff1d3', 2.5);
+  for (const spread of [-BOSS_ATTACK.spread, 0, BOSS_ATTACK.spread]) {
+    const direction = angle + spread, length = warningLength(enemy, map, direction);
+    if (length <= radius + 3) continue;
+    ctx.save(); ctx.rotate(direction);
+    ctx.strokeStyle = `rgba(236, 91, 62, ${.10 + progress * .13})`; ctx.lineWidth = BOSS_ATTACK.radius * 2;
+    ctx.beginPath(); ctx.moveTo(radius + 3, 0); ctx.lineTo(length, 0); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 238, 204, ${.65 + pulse * .3})`; ctx.lineWidth = 4; ctx.setLineDash([12, 8]);
+    ctx.beginPath(); ctx.moveTo(radius + 3, 0); ctx.lineTo(length, 0); ctx.stroke();
+    ctx.strokeStyle = '#e95946'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.restore();
+  }
+  ctx.strokeStyle = '#f0644b'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.beginPath();
+  ctx.arc(0, 0, radius + 9 + progress * 8, -Math.PI / 2, -Math.PI / 2 + TAU * progress); ctx.stroke();
+  ctx.restore();
+}
+
 export function drawArena(ctx, game, { time = 0 } = {}) {
   const map = game.map || {}, w = num(map.width, 1280), h = num(map.height, 760), t = num(time) * .001;
   const palette = themes[map.id] || themes[map.theme] || themes.courtyard;
@@ -181,6 +230,7 @@ export function drawArena(ctx, game, { time = 0 } = {}) {
     ctx.moveTo(-3, -9); ctx.lineTo(7, 0); ctx.lineTo(-3, 9); ctx.moveTo(12, -9); ctx.lineTo(22, 0); ctx.lineTo(12, 9); ctx.stroke(); ctx.restore();
   }
   for (const p of game.pickups || []) pickup(ctx, p, t);
+  for (const enemy of game.enemies || []) rangedWarning(ctx, enemy, map, t);
   for (const [i, o] of (map.obstacles || []).entries()) obstacle(ctx, o, palette, i);
   const player = game.player;
   const actors = [...(game.enemies || [])];
@@ -188,17 +238,30 @@ export function drawArena(ctx, game, { time = 0 } = {}) {
   actors.sort((a, b) => num(a.y) - num(b.y));
   for (const actor of actors) {
     const enemy = actor !== player;
-    drawEgg(ctx, num(actor.x), num(actor.y), { angle: num(actor.angle), scale: num(actor.radius, enemy ? 19 : 20) / 20,
+    drawEgg(ctx, num(actor.x), num(actor.y), { angle: enemy && actor.rangedCharge > 0 ? num(actor.attackAngle, num(actor.angle)) : num(actor.angle), scale: num(actor.radius, enemy ? 19 : 20) / 20,
       shield: enemy ? 0 : num(actor.shield), enemyType: enemy ? (actor.type || 'grunt') : null,
       hurt: enemy ? num(actor.hitFlash) : num(actor.invulnerability), weapon: actor.currentWeapon || 'pistol', time });
-    if (enemy && actor.hp < actor.maxHp) {
+    if (enemy && (actor.type === 'tank' || actor.hp < actor.maxHp)) {
       const ratio = Math.max(0, Math.min(1, num(actor.hp) / Math.max(1, num(actor.maxHp, 1)))), radius = num(actor.radius, 19);
-      ctx.fillStyle = '#243c4859'; roundRect(ctx, num(actor.x) - 15, num(actor.y) - radius - 16, 30, 4, 2); ctx.fill();
-      if (ratio > 0) { ctx.fillStyle = '#fff2cb'; roundRect(ctx, num(actor.x) - 15, num(actor.y) - radius - 16, 30 * ratio, 4, 2); ctx.fill(); }
+      const boss = actor.type === 'tank', width = boss ? 58 : 30, height = boss ? 6 : 4, top = num(actor.y) - radius - (boss ? 20 : 16);
+      ctx.fillStyle = '#243c487a'; roundRect(ctx, num(actor.x) - width / 2, top, width, height, 2); ctx.fill();
+      if (ratio > 0) { ctx.fillStyle = boss ? '#ffaf83' : '#fff2cb'; roundRect(ctx, num(actor.x) - width / 2, top, width * ratio, height, 2); ctx.fill(); }
+      if (boss) {
+        ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('重甲 BOSS', num(actor.x), top - 5);
+      }
     }
   }
   for (const b of game.bullets || []) {
     const x = num(b.x), y = num(b.y), a = Math.atan2(num(b.vy), num(b.vx));
+    if (b.owner === 'enemy') {
+      const radius = Math.max(1, num(b.radius, 7));
+      ctx.strokeStyle = '#f06a4990'; ctx.lineWidth = radius * 1.4; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x - Math.cos(a) * 18, y - Math.sin(a) * 18); ctx.lineTo(x, y); ctx.stroke();
+      circle(ctx, x, y, radius + 3, '#f05d432b');
+      circle(ctx, x, y, radius, '#ffad69', '#ba443d', 2);
+      circle(ctx, x - 1.5, y - 1.5, radius * .38, '#fff1c7');
+      continue;
+    }
     ctx.strokeStyle = b.owner === 'enemy' ? '#ed8669' : '#fff5c5'; ctx.lineWidth = b.weapon === 'sniper' ? 4 : 3; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(x - Math.cos(a) * 12, y - Math.sin(a) * 12); ctx.lineTo(x, y); ctx.stroke();
     circle(ctx, x, y, b.weapon === 'sniper' ? 3 : 2, '#fffbe7');
