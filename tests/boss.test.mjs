@@ -236,7 +236,8 @@ test('wave completion clears hostile projectiles and terminal states freeze pend
   hostileBullet(cleared);
   cleared.spawnQueue = [];
   cleared.clearWave();
-  assert.equal(cleared.status, 'intermission');
+  assert.equal(cleared.status, 'playing');
+  assert.equal(cleared.wave, 2);
   assert.equal(cleared.bullets.length, 0);
 
   for (const status of ['dead', 'won']) {

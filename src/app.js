@@ -181,13 +181,6 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       const tw = Math.min(490, toast.length * 16 + 44); rounded(layout.w / 2 - tw / 2, arena.y + 15, tw, 38, 19, 'rgba(16,30,37,.86)');
       text(toast, layout.w / 2, arena.y + 34, 15, C.ink, 600, 'center');
     }
-    if (game.status === 'intermission' && !paused && !help) {
-      const boxW = 440, boxH = 134, x = (layout.w - boxW) / 2, y = arena.y + arena.h / 2 - boxH / 2;
-      rounded(x, y, boxW, boxH, 18, 'rgba(16,30,37,.93)', C.teal);
-      text(`第 ${game.wave} 波清理完成`, layout.w / 2, y + 34, 26, C.lime, 750, 'center');
-      text('补给已掉落，靠近拾取后准备下一波', layout.w / 2, y + 68, 17, C.ink, 500, 'center');
-      text(`${Math.max(1, Math.ceil(game.intermissionRemaining))} 秒后继续`, layout.w / 2, y + 105, 16, C.muted, 600, 'center');
-    }
     if (paused && !help) drawPause();
     if (['dead', 'won'].includes(game.status)) drawResult();
   }
@@ -254,7 +247,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const p = logical(point); pointer = p;
     if (type === 'down' && point.button === 0) {
       if (activate(p)) return;
-      if (game && !paused && !help && ['playing', 'intermission'].includes(game.status)) shooting = true;
+      if (game && !paused && !help && game.status === 'playing') shooting = true;
     }
     if (type === 'up') shooting = false;
   }

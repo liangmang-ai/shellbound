@@ -160,7 +160,6 @@ export class Game {
     this.wave = 0;
     this.maxWaves = MAX_WAVES;
     this.status = 'intermission';
-    this.intermissionRemaining = 0;
     this.score = 0;
     this.kills = 0;
     this.time = 0;
@@ -186,7 +185,6 @@ export class Game {
     const composition = getWaveComposition(this.wave);
     this.waveTotal = composition.total;
     this.status = 'playing';
-    this.intermissionRemaining = 0;
     this.spawnTimer = 0.25;
     this.spawnQueue = [];
     for (let i = 0; i < composition.regularCount; i++) {
@@ -282,9 +280,6 @@ export class Game {
       this.events.push({ type: 'dead' });
     } else if (this.status === 'playing' && this.spawnQueue.length === 0 && this.enemies.length === 0) {
       this.clearWave();
-    } else if (this.status === 'intermission') {
-      this.intermissionRemaining -= dt;
-      if (this.intermissionRemaining <= 0) this.startNextWave();
     }
   }
 
@@ -674,7 +669,6 @@ export class Game {
       return;
     }
     this.status = 'intermission';
-    this.intermissionRemaining = 6;
     const p = this.player;
     const drops = [['ammo', -55, 0], ['shield', 55, 0], ['grenade', 0, 55], ['health', 0, -55]];
     for (const [type, dx, dy] of drops) this.spawnPickup(type, p.x + dx, p.y + dy, { guaranteed: true });
@@ -685,5 +679,6 @@ export class Game {
       this.spawnPickup('weapon', p.x + 82, p.y + 55, { weaponId: unlock, guaranteed: true });
       this.events.push({ type: 'unlock', weaponId: unlock });
     }
+    this.startNextWave();
   }
 }

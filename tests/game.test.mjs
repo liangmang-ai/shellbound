@@ -127,7 +127,7 @@ test('duplicate weapon drops fill the matching ammo without forcing a weapon cha
   assert.equal(game.player.weapons.rifle.reserve, WEAPONS.rifle.reserveMax);
 });
 
-test('wave cleanup clears live attacks, grants supplies and all weapons by wave eight', () => {
+test('wave cleanup immediately starts the next wave, clears live attacks and grants supplies', () => {
   const game = new Game();
   for (let wave = 1; wave <= 7; wave++) {
     game.spawnQueue = [];
@@ -135,14 +135,40 @@ test('wave cleanup clears live attacks, grants supplies and all weapons by wave 
     game.bullets.push({ life: 1 });
     game.grenades.push({ fuse: 1 });
     game.clearWave();
-    assert.equal(game.status, 'intermission');
+    assert.equal(game.status, 'playing');
+    assert.equal(game.wave, wave + 1);
+    assert.ok(game.spawnQueue.length > 0);
     assert.equal(game.bullets.length, 0);
     assert.equal(game.grenades.length, 0);
     assert.ok(game.pickups.some(pickup => pickup.guaranteed && pickup.type === 'grenade'));
-    game.startNextWave();
   }
   assert.equal(game.wave, 8);
   assert.deepEqual(Object.keys(game.player.weapons), ['pistol', 'smg', 'shotgun', 'rifle', 'lmg', 'sniper']);
+});
+
+test('killing the last enemy advances in the same update and preserves player state and input', () => {
+  const game = new Game();
+  game.spawnQueue = [];
+  enemy(game, { x: 700, hp: 1 });
+  game.update(1 / 60, { shoot: true, aimX: 740, aimY: 380 });
+  assert.equal(game.kills, 1);
+  assert.equal(game.wave, 2);
+  assert.equal(game.status, 'playing');
+  assert.equal(game.player.hp, 100);
+  assert.equal(game.player.shield, 35);
+  assert.equal(game.player.grenades, 3);
+  assert.equal(game.player.currentWeapon, 'pistol');
+  assert.equal(game.player.weapons.pistol.clip, 11);
+  assert.ok(game.player.weapons.smg);
+  assert.deepEqual(game.events.filter(event => ['waveClear', 'unlock', 'wave'].includes(event.type)), [
+    { type: 'waveClear', wave: 1 },
+    { type: 'unlock', weaponId: 'smg' },
+    { type: 'wave', wave: 2 },
+  ]);
+  const x = game.player.x;
+  game.update(1 / 60, { moveX: 1 });
+  assert.ok(game.player.x > x);
+  assert.equal(game.wave, 2, 'the new spawn queue prevents clearing another wave immediately');
 });
 
 test('ten cleared waves produce victory and terminal states do not advance', () => {
@@ -151,6 +177,8 @@ test('ten cleared waves produce victory and terminal states do not advance', () 
   game.spawnQueue = []; game.enemies = [];
   game.update(1 / 60);
   assert.equal(game.status, 'won');
+  assert.equal(game.wave, MAX_WAVES);
+  assert.equal(game.spawnQueue.length, 0);
   const time = game.time;
   game.update(0.1, { moveX: 1, shoot: true });
   assert.equal(game.time, time);
