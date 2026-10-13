@@ -225,3 +225,116 @@ test('audio unlocks on gestures, receives real shot events and stops for pause/m
   assert.equal(h.app.getSnapshot().screen, 'menu');
   assert.equal(calls.at(-1), 'pause');
 });
+
+test('grenade drag previews a world landing and throws there only after release', t => {
+  const h = harness(t), button = h.button('手雷'), target = { x: 740, y: 475 };
+  const arena = h.app.getSnapshot().arena;
+  const point = { x: (target.x - arena.camera.x) * arena.scale, y: (target.y - arena.camera.y) * arena.scale };
+  const facing = h.game.player.angle;
+  h.touch('start', 40, button.cx, button.cy); h.step();
+  assert.equal(h.game.player.grenades, 3, 'hold does not consume inventory');
+  h.touch('move', 40, point.x, point.y); h.step();
+  const preview = h.app.getSnapshot().grenadeAim;
+  assert.ok(Math.abs(preview.x - target.x) < 1e-6 && Math.abs(preview.y - target.y) < 1e-6);
+  assert.equal(preview.range, 135);
+  assert.equal(h.game.grenades.length, 0);
+  near(h.game.player.angle, facing);
+  h.touch('end', 40, point.x, point.y); h.step();
+  assert.equal(h.game.player.grenades, 2);
+  assert.equal(h.app.getSnapshot().grenadeAim, null);
+  assert.ok(Math.abs(h.game.grenades[0].targetX - target.x) < 1e-6);
+  assert.ok(Math.abs(h.game.grenades[0].targetY - target.y) < 1e-6);
+});
+
+test('dragging back, cancellation, resize and pause never throw a held grenade', t => {
+  const h = harness(t), button = h.button('手雷');
+  const begin = id => { h.touch('start', id, button.cx, button.cy); h.touch('move', id, button.cx - 180, button.cy - 80); h.step(); };
+  begin(41); h.touch('move', 41, button.cx, button.cy); h.step();
+  assert.equal(h.app.getSnapshot().grenadeAim, null);
+  h.touch('end', 41, button.cx, button.cy); h.step();
+  begin(42); h.touch('cancel', 42, button.cx - 180, button.cy - 80); h.step();
+  begin(43); h.app.pause(); h.touch('end', 43, button.cx - 180, button.cy - 80); h.step();
+  h.tap('继续突围'); h.step();
+  begin(44); h.app.resize({ width: 812, height: 375 }); h.touch('end', 44, button.cx - 180, button.cy - 80); h.step();
+  assert.equal(h.game.player.grenades, 3);
+  assert.equal(h.game.grenades.length, 0);
+});
+
+test('mouse drag and cancellation use the same grenade selection as touch', t => {
+  const h = harness(t, 'web'), button = h.button('手雷');
+  h.app.handlePointer('down', h.point(button.cx, button.cy, { button: 0 }));
+  h.app.handlePointer('move', h.point(button.cx - 180, button.cy - 80)); h.step();
+  assert.ok(h.app.getSnapshot().grenadeAim);
+  h.app.handlePointer('cancel', h.point(button.cx - 180, button.cy - 80)); h.step();
+  assert.equal(h.game.player.grenades, 3);
+  h.app.handlePointer('down', h.point(button.cx, button.cy, { button: 0 }));
+  h.app.handlePointer('move', h.point(button.cx - 180, button.cy - 80)); h.step();
+  const expected = h.app.getSnapshot().grenadeAim;
+  h.app.handlePointer('up', h.point(button.cx - 180, button.cy - 80)); h.step();
+  assert.equal(h.game.player.grenades, 2);
+  assert.equal(h.game.player.weapons.pistol.clip, 12);
+  assert.ok(Math.abs(h.game.grenades[0].targetX - expected.x) < 1e-6);
+});
+
+test('quick switch cycles unlocked guns and rapid taps while moving and firing stay responsive', t => {
+  const h = harness(t), { move, fire } = h.app.getSnapshot().controls;
+  h.game.player.weapons.smg = h.game.makeAmmo('smg');
+  h.game.player.weapons.shotgun = h.game.makeAmmo('shotgun');
+  h.touch('start', 1, move.x, move.y); h.touch('move', 1, move.x + 40, move.y);
+  h.touch('start', 2, fire.x, fire.y);
+  h.tap('切枪'); h.step();
+  assert.equal(h.game.player.currentWeapon, 'smg');
+  const x = h.game.player.x;
+  h.tap('切枪'); h.step();
+  assert.equal(h.game.player.currentWeapon, 'shotgun');
+  assert.ok(h.game.player.x > x);
+  assert.ok(h.game.player.weapons.shotgun.clip < 6, 'held fire uses the newly equipped gun');
+  h.tap('切枪'); h.tap('切枪'); h.step();
+  assert.equal(h.game.player.currentWeapon, 'smg', 'two taps within one frame still cycle twice');
+  assert.equal(h.app.getSnapshot().weaponPicker, false);
+});
+
+for (const [name, choose] of [
+  ['quick button', h => h.tap('切枪')],
+  ['weapon picker', h => { h.tap('切换武器'); h.step(); h.tap('脆壳霰弹枪'); }],
+  ['Q cycle', h => h.app.handleKey('down', 'q')],
+  ['number slot', h => h.app.handleKey('down', '6')],
+]) test(`held fire uses the new gun assist range on the ${name} switch frame`, t => {
+  const h = harness(t), { move, fire } = h.app.getSnapshot().controls;
+  h.game.map = { ...h.game.map, obstacles: [] };
+  h.game.player.weapons.shotgun = h.game.makeAmmo('shotgun');
+  const p = h.game.player;
+  h.game.enemies.push({ id: 902, type: 'grunt', radius: 17, hp: 1000, maxHp: 1000,
+    x: p.x + 320 * Math.cos(.25), y: p.y + 320 * Math.sin(.25), speed: 0, damage: 12, hitFlash: 0 });
+  h.touch('start', 1, move.x, move.y); h.touch('move', 1, move.x + 40, move.y); h.step();
+  h.touch('end', 1, move.x + 40, move.y);
+  h.touch('start', 2, fire.x, fire.y); h.step();
+  assert.equal(h.app.getSnapshot().aim.targetId, 902, 'the pistol can assist this distant target');
+  choose(h); h.step();
+  assert.equal(p.currentWeapon, 'shotgun');
+  assert.equal(p.weapons.shotgun.clip, 5, 'the first shotgun shell fires on the switch frame');
+  assert.equal(h.app.getSnapshot().aim.targetId, null, 'the new gun range applies before that shell fires');
+  near(p.angle, 0);
+  h.tap('切枪'); h.step();
+  assert.equal(p.currentWeapon, 'pistol');
+  assert.equal(h.app.getSnapshot().aim.targetId, 902, 'switching back immediately restores the pistol assist range');
+});
+
+test('revive button continues the same run once and records later results again', t => {
+  const saves = new Map();
+  const h = harness(t, 'wechat', { storage: { getItem: key => saves.get(key), setItem: (key, value) => saves.set(key, value) } });
+  h.game.player.weapons.rifle = h.game.makeAmmo('rifle'); h.game.equipWeapon('rifle');
+  h.game.score = 70; h.game.wave = 4; h.game.status = 'dead'; h.game.player.hp = 0; h.step();
+  const deadButton = h.button('免费复活');
+  assert.ok(deadButton.y > 0 && deadButton.y + deadButton.h < h.app.getSnapshot().layout.h);
+  h.tap('免费复活'); h.step();
+  assert.equal(h.game.status, 'playing'); assert.equal(h.game.wave, 4); assert.equal(h.game.score, 70);
+  assert.equal(h.game.player.currentWeapon, 'rifle'); assert.equal(h.game.player.hp, 100);
+  assert.equal(h.app.getSnapshot().game.revivesRemaining, 0);
+  assert.equal(h.app.getSnapshot().game.player.reviveProtectionRemaining, 3);
+  h.game.score = 200; h.game.status = 'dead'; h.game.player.hp = 0; h.step();
+  assert.equal(h.app.getSnapshot().buttons.some(button => button.label.includes('免费复活')), false);
+  assert.equal(JSON.parse(saves.get('shellbound.best.v1')).score, 200);
+  h.tap('再来一局'); h.step();
+  assert.equal(h.game.revivesRemaining, 1);
+});

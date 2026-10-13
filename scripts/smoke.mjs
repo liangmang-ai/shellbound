@@ -30,7 +30,7 @@ try {
     const pause = state.buttons.find(button => button.label.includes('暂停'));
     assert.ok(picker.x + picker.w <= state.layout.w / 2 - 110 && state.layout.w / 2 + 110 <= pause.x,
       'Weapon stats, central wave HUD, and pause remain separated across landscape aspect ratios');
-    const circles = ['move', 'fire', 'reload', 'grenade'].map(role => ({ role, ...state.controls[role] }));
+    const circles = ['move', 'fire', 'reload', 'grenade', 'weapon'].map(role => ({ role, ...state.controls[role] }));
     for (const circle of circles) {
       assert.ok(circle.x - circle.r >= 0 && circle.y - circle.r >= 0 && circle.x + circle.r <= state.layout.w && circle.y + circle.r <= state.layout.h,
         `${circle.role} must remain inside combat bounds`);
@@ -171,6 +171,17 @@ try {
     assert.ok(ms.game.player.weapons.pistol.clip < 12, 'A stationary held fire button must shoot');
     const grenades = ms.game.player.grenades;
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [moved, heldFire, t(grenade.x, grenade.y, 3)] });
+    await mobile.waitForTimeout(80);
+    assert.equal((await mobileSnapshot()).game.player.grenades, grenades, 'holding grenade previews before consuming inventory');
+    const aimedGrenade = t(ms.layout.w / 2 + 130, ms.layout.h / 2 - 40, 3);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [moved, heldFire, aimedGrenade] });
+    await mobile.waitForTimeout(80);
+    ms = await mobileSnapshot();
+    assert.ok(ms.grenadeAim && ms.grenadeAim.y < ms.game.player.y, 'dragging chooses a visible world landing above the player');
+    assert.equal(ms.grenadeAim.range, 135);
+    await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-grenade-aim.png` });
+    // CDP touchEnd names the contacts being lifted, rather than the survivors.
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [aimedGrenade] });
     await mobile.waitForTimeout(100);
     assert.equal((await mobileSnapshot()).game.player.grenades, grenades - 1, 'A third touch throws a grenade while moving and firing');
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
@@ -200,8 +211,8 @@ try {
     await mobile.close();
   }
   assert.deepEqual(errors, [], 'Browser must not raise runtime errors');
-  console.log('浏览器检查通过：地图选择、武器面板展开/收起、键鼠射击、圆形换弹/手雷、暂停/重开、移动朝向+持续开火、三种手机/两种平板横屏尺寸、横竖屏。');
-  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/mobile.png、artifacts/mobile-*-reload.png、artifacts/mobile-*-weapons.png');
+  console.log('浏览器检查通过：地图选择、武器面板展开/收起、键鼠射击、圆形换弹/拖动手雷、多指移动+开火+投雷、暂停/重开、三种手机/两种平板横屏尺寸、横竖屏。');
+  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/mobile.png、artifacts/mobile-*-grenade-aim.png、artifacts/mobile-*-reload.png、artifacts/mobile-*-weapons.png');
 } finally {
   await browser?.close();
   server.kill();

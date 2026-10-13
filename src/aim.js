@@ -2,9 +2,9 @@ import { segmentRect, WEAPONS } from './game.js';
 
 // A narrow forward cone keeps movement in charge. The stored facing must not
 // come from the assisted gun angle, or the cone would drift after each frame.
-export function findAimTarget(game, facing, viewport, previousId = null) {
-  const p = game.player, weapon = WEAPONS[p.currentWeapon];
-  const range = Math.min(520, weapon.range || weapon.bulletSpeed * .9);
+export function findAimTarget(game, facing, viewport, previousId = null, weaponId = game.player.currentWeapon) {
+  const p = game.player, weapon = WEAPONS[weaponId];
+  const range = Math.min(weaponId === 'shotgun' ? 220 : 520, weapon.range || weapon.bulletSpeed * .9);
   const candidates = [];
   for (const enemy of game.enemies) {
     if (enemy.hp <= 0 || enemy.x < viewport.x || enemy.x > viewport.x + viewport.w || enemy.y < viewport.y || enemy.y > viewport.y + viewport.h) continue;

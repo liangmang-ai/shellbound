@@ -1,6 +1,6 @@
 import { AUDIO_SAMPLE_RATE, SOUND_DEFINITIONS, synthesizeSound } from './audio-synthesis.js';
 
-const PRIORITY = { hit: 1, pistol: 2, smg: 2, rifle: 2, lmg: 2, sniper: 2, shotgun: 2, explosion: 4, hurt: 3, shield: 3, bossCharge: 3, bossVolley: 3, wave: 3, waveClear: 3, won: 4, dead: 4 };
+const PRIORITY = { hit: 1, pistol: 2, smg: 2, rifle: 2, lmg: 2, sniper: 2, shotgun: 2, explosion: 4, hurt: 3, shield: 3, bossCharge: 3, bossVolley: 3, wave: 3, waveClear: 3, won: 4, dead: 4, revive: 4 };
 const COOLDOWN = { hit: 65, pickup: 100, explosion: 65, bossVolley: 100, bossCharge: 180, shield: 120, hurt: 120 };
 const catchPromise = value => { if (value && typeof value.catch === 'function') value.catch(() => {}); };
 

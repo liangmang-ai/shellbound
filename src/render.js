@@ -358,10 +358,56 @@ function reloadIndicator(ctx, player, map) {
   ctx.restore();
 }
 
+function grenadePreview(ctx, player, aim, t) {
+  if (!player || !aim || !Number.isFinite(aim.x) || !Number.isFinite(aim.y)) return;
+  const x = aim.x, y = aim.y, radius = Math.max(1, num(aim.range, 135));
+  ctx.save();
+  circle(ctx, x, y, radius, '#ffbb681c', '#f2bd7ab0', 2);
+  ctx.strokeStyle = '#fff1c6'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  ctx.setLineDash([9, 8]); ctx.lineDashOffset = -t * 30;
+  ctx.beginPath(); ctx.moveTo(num(player.x), num(player.y));
+  const path = (aim.path || []).filter(point => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (path.length) for (const point of path) ctx.lineTo(point.x, point.y);
+  ctx.lineTo(x, y); ctx.stroke();
+  ctx.setLineDash([]); ctx.lineDashOffset = 0;
+  circle(ctx, x, y, 20, '#243c48df', '#ffd99c', 2.5);
+  ctx.translate(x, y); ctx.scale(.85, .85); pickupIcon(ctx, 'grenade');
+  ctx.restore();
+  ctx.save(); ctx.strokeStyle = '#fff2c9'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    ctx.moveTo(x + dx * 26, y + dy * 26); ctx.lineTo(x + dx * 35, y + dy * 35);
+  }
+  ctx.stroke(); ctx.restore();
+}
+
+function reviveProtection(ctx, player, map, t, foreground = false) {
+  const remaining = num(player.reviveProtectionRemaining);
+  if (remaining <= 0) return;
+  const x = num(player.x), y = num(player.y), radius = num(player.radius, 18) + 17;
+  ctx.save();
+  if (!foreground) {
+    const pulse = 1 + .035 * Math.sin(t * 9);
+    circle(ctx, x, y, radius * pulse + 9, '#d8f9ff24');
+    circle(ctx, x, y, radius * pulse, '#8edbf91f', '#e9fdffbd', 3);
+    ctx.strokeStyle = '#83dcec'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(x, y, radius * pulse + 4, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(1, remaining / 3)); ctx.stroke();
+  } else {
+    const bx = Math.max(43, Math.min(num(map.width, 1280) - 43, x));
+    const ammo = player.weapons?.[player.currentWeapon];
+    const by = Math.max(16, y - num(player.radius, 18) - (ammo?.reloadRemaining > 0 ? 66 : 35));
+    ctx.fillStyle = '#244b5deb'; roundRect(ctx, bx - 41, by - 12, 82, 24, 12); ctx.fill();
+    ctx.strokeStyle = '#b7f2f4'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#e8ffff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`复活保护 ${Math.ceil(remaining)}s`, bx, by);
+  }
+  ctx.restore();
+}
+
 // Optional screen bounds supply a camera measured in world coordinates. Callers
 // without a camera keep the original world-space rendering behavior.
 export function drawArena(ctx, game, bounds = {}) {
-  const { time = 0, camera } = bounds;
+  const { time = 0, camera, grenadeAim } = bounds;
   const map = game.map || {}, w = num(map.width, 1280), h = num(map.height, 760), t = num(time) * .001;
   const palette = themes[map.id] || themes[map.theme] || themes.courtyard;
   const factory = map.id === 'greenhouse' || map.theme === 'factory';
@@ -402,6 +448,8 @@ export function drawArena(ctx, game, bounds = {}) {
   for (const [i, o] of (map.obstacles || []).entries()) obstacle(ctx, o, palette, i, factory);
   const player = game.player;
   if (player) speedIndicator(ctx, player, t);
+  if (player) reviveProtection(ctx, player, map, t);
+  grenadePreview(ctx, player, grenadeAim, t);
   const activeBarrels = (game.barrels || []).filter(b => b.active !== false);
   const actors = [...(game.enemies || []), ...activeBarrels];
   if (player) actors.push(player);
@@ -411,7 +459,7 @@ export function drawArena(ctx, game, bounds = {}) {
     const enemy = actor !== player;
     drawEgg(ctx, num(actor.x), num(actor.y), { angle: enemy && actor.rangedCharge > 0 ? num(actor.attackAngle, num(actor.angle)) : num(actor.angle), scale: num(actor.radius, enemy ? 19 : 20) / 20,
       shield: enemy ? 0 : num(actor.shield), enemyType: enemy ? (actor.type || 'grunt') : null,
-      hurt: enemy ? num(actor.hitFlash) : num(actor.invulnerability), weapon: actor.currentWeapon || 'pistol', time });
+      hurt: enemy ? num(actor.hitFlash) : num(actor.reviveProtectionRemaining) > 0 ? 0 : num(actor.invulnerability), weapon: actor.currentWeapon || 'pistol', time });
     if (enemy && (actor.type === 'tank' || actor.hp < actor.maxHp)) {
       const ratio = Math.max(0, Math.min(1, num(actor.hp) / Math.max(1, num(actor.maxHp, 1)))), radius = num(actor.radius, 19);
       const boss = actor.type === 'tank', width = boss ? 58 : 30, height = boss ? 6 : 4, top = num(actor.y) - radius - (boss ? 20 : 16);
@@ -446,5 +494,6 @@ export function drawArena(ctx, game, bounds = {}) {
   }
   for (const e of game.effects || []) effect(ctx, e);
   if (player) reloadIndicator(ctx, player, map);
+  if (player) reviveProtection(ctx, player, map, t, true);
   ctx.restore(); ctx.restore();
 }

@@ -1,4 +1,4 @@
-import { Game, MAPS, WEAPONS, WEAPON_ORDER } from './game.js';
+import { Game, MAPS, WEAPONS, WEAPON_ORDER, GRENADE_RULES } from './game.js';
 import { drawArena, drawEgg } from './render.js';
 import { findAimTarget } from './aim.js';
 
@@ -13,6 +13,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   let size = { width, height, pixelRatio }, layout, game = null, screen = 'menu', selectedMap = MAPS[0].id;
   let paused = false, help = false, weaponPicker = false, lastTimestamp = null, clock = 0, pointer = null, shooting = false;
   let buttons = [], touches = new Map(), keys = new Set(), actions = {}, toast = '', toastUntil = 0, resultSaved = false;
+  let grenadePointer = null;
   let best = { wave: 0, score: 0 };
   let muted = false, aimAssist = true, facing = -Math.PI / 2, aimManual = false;
   try { best = { ...best, ...JSON.parse(storage?.getItem('shellbound.best.v1') || '{}') }; } catch { /* A save is optional. */ }
@@ -54,12 +55,49 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       fire: { x: layout.w - 116, y: layout.h - 112, r: 64 },
       reload: { x: layout.w - 260, y: layout.h - 78, r: 39 },
       grenade: { x: layout.w - 223, y: layout.h - 215, r: 39 },
+      weapon: { x: layout.w - 332, y: layout.h - 215, r: 36 },
     };
   }
   // Use a physical-pixel threshold so a small thumb wobble does not switch
   // from assisted fire to manual aim on a small landscape screen.
   function fireDragThreshold() { return Math.max(12, 14 / layout.scale); }
-  function clearInput() { keys.clear(); touches.clear(); pointer = null; shooting = false; actions = {}; weaponPicker = false; aimManual = false; if (game) game.aimTarget = null; }
+  function clearInput() { keys.clear(); touches.clear(); pointer = null; grenadePointer = null; shooting = false; actions = {}; weaponPicker = false; aimManual = false; if (game) game.aimTarget = null; }
+  function cycleWeapon() {
+    const owned = weaponIds.filter(id => game.player.weapons[id]);
+    if (owned.length < 2) { toast = '清关或捡武器箱解锁新枪'; toastUntil = clock + 2; return; }
+    const current = actions.weaponSlot || game.player.currentWeapon;
+    actions.weaponSlot = owned[(owned.indexOf(current) + 1) % owned.length];
+    weaponPicker = false;
+  }
+  function revive() {
+    if (!game.revive()) return;
+    resultSaved = false; paused = false; help = false; clearInput(); lastTimestamp = null;
+    facing = game.player.angle;
+    audio?.unlock(); audio?.playEvents([{ type: 'revive' }]);
+    toast = '复活成功 · 3 秒保护 · 本局复活已用完'; toastUntil = clock + 3;
+  }
+  function grenadeDrag(touch, point) {
+    Object.assign(touch, point);
+    if (Math.hypot(touch.x - touch.base.x, touch.y - touch.base.y) > fireDragThreshold()) touch.dragged = true;
+  }
+  function grenadeAim() {
+    if (!game || paused || help || game.status !== 'playing') return null;
+    const touch = grenadePointer || [...touches.values()].find(item => item.role === 'grenade');
+    if (!touch) return null;
+    const button = controlBounds().grenade;
+    if (touch.dragged && Math.hypot(touch.x - button.x, touch.y - button.y) <= button.r) return null;
+    const target = game.resolveGrenadeTarget(touch.dragged ? world(touch) : undefined);
+    return { ...target, range: GRENADE_RULES.blastRadius };
+  }
+  function releaseGrenade(touch, point) {
+    if (!game || paused || help || game.status !== 'playing') return;
+    grenadeDrag(touch, point);
+    const button = controlBounds().grenade;
+    if (touch.dragged && Math.hypot(point.x - button.x, point.y - button.y) <= button.r) return;
+    if (point.x < 0 || point.y < 0 || point.x > layout.w || point.y > layout.h) return;
+    actions.grenade = true;
+    actions.grenadeTarget = touch.dragged ? world(point) : undefined;
+  }
   function start() {
     game = new Game({ mapId: selectedMap, seed: Date.now() >>> 0 });
     facing = game.player.angle; audio?.pause(); audio?.unlock(); audio?.playEvents(game.events);
@@ -86,7 +124,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function skillButton(role, label, callback, { color = C.ink, value = '', disabled = false, progress = 0 } = {}) {
     const { x, y, r } = controlBounds()[role];
-    const held = [...touches.values()].some(touch => touch.role === role);
+    const held = [...touches.values()].some(touch => touch.role === role) || role === 'grenade' && grenadePointer;
     ctx.save(); ctx.globalAlpha = disabled ? .55 : 1;
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fillStyle = held ? 'rgba(83,112,72,.92)' : 'rgba(16,30,37,.78)'; ctx.fill();
@@ -106,6 +144,9 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     } else if (role === 'reload') {
       ctx.beginPath(); ctx.arc(x, cy, 13, -.7, Math.PI * 1.4); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x + 9, cy - 15); ctx.lineTo(x + 18, cy - 12); ctx.lineTo(x + 11, cy - 5); ctx.stroke();
+    } else if (role === 'weapon') {
+      ctx.beginPath(); ctx.moveTo(x - 16, cy - 7); ctx.lineTo(x + 16, cy - 7); ctx.lineTo(x + 10, cy - 13); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 16, cy + 7); ctx.lineTo(x - 16, cy + 7); ctx.lineTo(x - 10, cy + 13); ctx.stroke();
     } else {
       ctx.beginPath(); ctx.ellipse(x, cy + 3, 10, 13, -.3, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x - 5, cy - 9); ctx.lineTo(x + 2, cy - 15); ctx.lineTo(x + 12, cy - 10); ctx.stroke();
@@ -113,7 +154,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text(role === 'grenade' ? `${label} ${value}` : label, x, y + (role === 'fire' ? 31 : 20), role === 'fire' ? 18 : 13, color, 750, 'center');
     if (progress > 0) { ctx.beginPath(); ctx.arc(x, y, r - 5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress); ctx.strokeStyle = C.lime; ctx.lineWidth = 4; ctx.stroke(); }
     ctx.restore();
-    buttons.push({ x: x - r, y: y - r, w: r * 2, h: r * 2, cx: x, cy: y, r, role: role === 'fire' ? 'fire' : undefined, callback, label });
+    buttons.push({ x: x - r, y: y - r, w: r * 2, h: r * 2, cx: x, cy: y, r, role, callback, label });
   }
   function line(x1, y1, x2, y2, color = C.line) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.stroke(); }
   function mapPreview(map, x, y, w, h) {
@@ -216,7 +257,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     button(w - (platform === 'wechat' ? 263 : 98), 24, 74, 39, 'Ⅱ 暂停', togglePause, { fill: 'rgba(16,30,37,.8)', fontSize: 14 });
     skillButton('fire', '开火', () => {}, { color: C.lime, disabled: ammo.reloadRemaining > 0 });
     skillButton('reload', '换弹', () => { actions.reload = true; }, { color: C.teal, progress: ammo.reloadRemaining > 0 ? 1 - ammo.reloadRemaining / WEAPONS[p.currentWeapon].reloadTime : 0 });
-    skillButton('grenade', '手雷', () => { actions.grenade = true; }, { color: '#f5cc92', value: p.grenades, disabled: p.grenades <= 0 });
+    skillButton('grenade', '手雷', () => {}, { color: '#f5cc92', value: p.grenades, disabled: p.grenades <= 0 });
+    skillButton('weapon', '切枪', cycleWeapon, { color: '#ddc8f4', disabled: Object.keys(p.weapons).length < 2 });
   }
   function drawStick() {
     const { x, y, r } = controlBounds().move;
@@ -229,8 +271,13 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function drawGame() {
     const arena = arenaBounds();
-    drawArena(ctx, game, { time: clock * 1000, ...arena });
+    const aimingGrenade = grenadeAim();
+    drawArena(ctx, game, { time: clock * 1000, ...arena, grenadeAim: aimingGrenade });
     drawHUD();
+    if (aimingGrenade) {
+      rounded(layout.w / 2 - 175, layout.h - 107, 350, 32, 16, 'rgba(16,30,37,.88)');
+      text('松手投掷 · 拖回手雷按钮取消', layout.w / 2, layout.h - 91, 14, '#f5cc92', 650, 'center');
+    }
     const bosses = game.enemies.filter(enemy => enemy.type === 'tank' && enemy.hp > 0);
     const boss = bosses.find(enemy => enemy.rangedCharge > 0) || bosses[0];
     if (boss) {
@@ -246,8 +293,10 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       line(pointer.x, pointer.y - 16, pointer.x, pointer.y - 7, C.lime); line(pointer.x, pointer.y + 7, pointer.x, pointer.y + 16, C.lime);
     }
     if (toastUntil > clock && !paused && !help && game.status === 'playing' && !boss) {
-      const tw = Math.min(440, toast.length * 16 + 44); rounded(layout.w / 2 - tw / 2, layout.h - 52, tw, 34, 17, 'rgba(16,30,37,.86)');
-      text(toast, layout.w / 2, layout.h - 35, 14, C.ink, 600, 'center');
+      const tw = Math.min(440, toast.length * 16 + 44), controls = controlBounds();
+      const tx = clamp(layout.w / 2, controls.move.x + controls.move.r + 16 + tw / 2, controls.reload.x - controls.reload.r - 16 - tw / 2);
+      rounded(tx - tw / 2, layout.h - 52, tw, 34, 17, 'rgba(16,30,37,.86)');
+      text(toast, tx, layout.h - 35, 14, C.ink, 600, 'center');
     }
     if (paused && !help) drawPause();
     if (['dead', 'won'].includes(game.status)) drawResult();
@@ -265,14 +314,15 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text('Esc / P 继续', layout.w / 2, y + 326, 12, C.muted, 500, 'center');
   }
   function drawResult() {
-    shade(); const won = game.status === 'won', x = layout.w / 2 - 248, y = layout.h / 2 - 177;
-    rounded(x, y, 496, 354, 22, C.panel, won ? C.lime : C.line);
+    shade(); const won = game.status === 'won', boxH = won ? 354 : 418, x = layout.w / 2 - 248, y = layout.h / 2 - boxH / 2;
+    rounded(x, y, 496, boxH, 22, C.panel, won ? C.lime : C.line);
     text(won ? '包围圈，突破了！' : '蛋壳裂了，勇气还在。', layout.w / 2, y + 48, 29, won ? C.lime : C.ink, 800, 'center');
     text(won ? '十波攻势全部完成' : '调整走位，再试一次', layout.w / 2, y + 86, 16, C.muted, 500, 'center');
     text(String(game.score), layout.w / 2, y + 143, 51, C.ink, 800, 'center'); text('本局得分', layout.w / 2, y + 181, 13, C.muted, 600, 'center');
     text(`第 ${game.wave} 波   /   ${game.kills} 次击败   /   ${Math.floor(game.time)} 秒`, layout.w / 2, y + 213, 16, C.teal, 600, 'center');
-    button(x + 28, y + 251, 440, 48, '再来一局   →', start, { fill: C.lime, border: C.lime, color: C.bg });
-    button(x + 150, y + 312, 196, 28, '返回地图选择', menu, { fill: C.panel, border: C.panel, color: C.muted, fontSize: 14 });
+    if (!won) button(x + 28, y + 251, 440, 48, game.revivesRemaining ? '免费复活 · 本局 1 次' : '本局复活已用完', revive, { fill: game.revivesRemaining ? C.lime : C.panel, border: game.revivesRemaining ? C.lime : C.line, color: game.revivesRemaining ? C.bg : C.muted, active: game.revivesRemaining > 0 });
+    button(x + 28, y + (won ? 251 : 312), 440, 48, '再来一局   →', start, { fill: won ? C.lime : C.panel, border: won ? C.lime : C.line, color: won ? C.bg : C.ink });
+    button(x + 150, y + (won ? 312 : 373), 196, 28, '返回地图选择', menu, { fill: C.panel, border: C.panel, color: C.muted, fontSize: 14 });
   }
   function drawHelp() {
     shade(); const boxW = 650, boxH = layout.compact ? 426 : 490, x = (layout.w - boxW) / 2, y = (layout.h - boxH) / 2;
@@ -280,10 +330,10 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const rows = [
       ['移动与射击', '电脑：WASD / 方向键移动，鼠标瞄准，左键射击'],
       ['手机操作', '移动转向；按住开火辅助瞄准，拖动开火钮手动瞄准'],
-      ['武器管理', '左上角换枪与查看弹药；右侧圆形按钮换弹、扔雷'],
-      ['盾牌与手雷', '盾牌先吸收伤害；G 扔手雷，也可点击手雷按钮'],
+      ['武器管理', '右侧切枪钮顺序换枪；左上角武器库可直接选择'],
+      ['盾牌与手雷', '手雷按钮拖到目标松手投掷，拖回按钮取消；G 快投'],
       ['补给与闯关', '捡新枪解锁，重复枪补弹；每波清关都有补给'],
-      ['工坊机关', '油桶爆炸清怪，过一会补充；踩箭头带加速，离开恢复'],
+      ['工坊机关', '油桶也伤自己，小心距离；踩箭头带加速，离开恢复'],
     ];
     rows.forEach(([title, detail], i) => { const ry = y + 88 + i * (layout.compact ? 44 : 51); text(title, x + 30, ry, 16, C.teal, 700); text(detail, x + 30, ry + 23, 14, C.ink); });
     button(x + 30, y + boxH - 68, boxW - 60, 44, '准备好了', () => { help = false; clearInput(); lastTimestamp = null; }, { fill: C.lime, border: C.lime, color: C.bg, fontSize: 17 });
@@ -318,7 +368,14 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (aimedTouch) target = { x: p.x + aimedTouch.x * 500, y: p.y + aimedTouch.y * 500 };
     aimManual = Boolean(aimedTouch || pointer);
     const arena = arenaBounds();
-    const assisted = aimAssist && touchFire && !aimManual ? findAimTarget(game, facing, { x: arena.camera.x, y: arena.camera.y, w: arena.w / arena.scale, h: arena.h / arena.scale }, game.aimTarget?.id) : null;
+    // Game.update equips before firing; assistance must use that same weapon
+    // on the switch frame, including a slot followed by a Q/Tab cycle.
+    let aimWeapon = p.weapons[actions.weaponSlot] ? actions.weaponSlot : p.currentWeapon;
+    if (actions.weaponNext && !game.previousInput.weaponNext) {
+      const owned = weaponIds.filter(id => p.weapons[id]);
+      aimWeapon = owned[(owned.indexOf(aimWeapon) + 1) % owned.length];
+    }
+    const assisted = aimAssist && touchFire && !aimManual ? findAimTarget(game, facing, { x: arena.camera.x, y: arena.camera.y, w: arena.w / arena.scale, h: arena.h / arena.scale }, game.aimTarget?.id, aimWeapon) : null;
     game.aimTarget = assisted ? { id: assisted.id, x: assisted.x, y: assisted.y } : null;
     if (assisted) target = { x: assisted.x, y: assisted.y };
     const input = { moveX, moveY, aimX: target.x, aimY: target.y, shoot: fire, ...actions };
@@ -335,9 +392,17 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function handlePointer(type, point) {
     const p = logical(point);
-    if (type === 'up' || type === 'cancel') { shooting = false; return; }
+    if (type === 'up' || type === 'cancel') {
+      if (grenadePointer && type === 'up') releaseGrenade(grenadePointer, p);
+      grenadePointer = null; shooting = false; return;
+    }
+    if (grenadePointer && type === 'move') { grenadeDrag(grenadePointer, p); return; }
     if (type === 'down' && point.button === 0) {
       audio?.unlock();
+      if (buttonAt(p)?.role === 'grenade' && game && !paused && !help && game.status === 'playing') {
+        if (game.player.grenades > 0) grenadePointer = { ...p, base: { ...p }, dragged: false };
+        shooting = false; pointer = null; return;
+      }
       if (buttonAt(p)?.role === 'fire' && game && !paused && !help && game.status === 'playing') { shooting = true; return; }
       if (activate(p)) return;
       if (game && !paused && !help && game.status === 'playing') shooting = true;
@@ -360,11 +425,19 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function handleTouch(type, changedTouches) {
     for (const touch of changedTouches) {
       const p = logical(touch);
-      if (type === 'end' || type === 'cancel') { touches.delete(touch.id); continue; }
+      if (type === 'end' || type === 'cancel') {
+        const activeTouch = touches.get(touch.id);
+        if (activeTouch?.role === 'grenade' && type === 'end') releaseGrenade(activeTouch, p);
+        touches.delete(touch.id); continue;
+      }
       if (type === 'start') {
         audio?.unlock();
         pointer = null;
         const playing = screen === 'game' && !paused && !help && game && !['dead', 'won'].includes(game.status);
+        if (playing && buttonAt(p)?.role === 'grenade') {
+          if (game.player.grenades > 0 && ![...touches.values()].some(t => t.role === 'grenade')) touches.set(touch.id, { ...p, base: { ...p }, role: 'grenade', dragged: false });
+          continue;
+        }
         if (playing && buttonAt(p)?.role === 'fire') {
           if (![...touches.values()].some(t => t.role === 'fire')) touches.set(touch.id, { ...p, base: { ...p }, role: 'fire' });
           continue;
@@ -372,7 +445,10 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
         if (activate(p) || !playing || p.x >= layout.w / 2) continue;
         if ([...touches.values()].some(t => t.role === 'move')) continue;
         touches.set(touch.id, { ...p, base: { ...p }, role: 'move' });
-      } else if (touches.has(touch.id)) Object.assign(touches.get(touch.id), p);
+      } else if (touches.has(touch.id)) {
+        const activeTouch = touches.get(touch.id);
+        if (activeTouch.role === 'grenade') grenadeDrag(activeTouch, p); else Object.assign(activeTouch, p);
+      }
     }
   }
   function saveResult() {
@@ -399,7 +475,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (help) drawHelp();
   }
   function getSnapshot() {
-    return { screen, paused, help, weaponPicker, selectedMap, best, settings: { muted, aimAssist }, audio: audio?.getSnapshot() || null, aim: { facing, manual: aimManual, targetId: game?.aimTarget?.id ?? null }, layout: { ...layout }, controls: controlBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { status: game.status, wave: game.wave, score: game.score, time: game.time, kills: game.kills, mapId: game.map.id, environment: game.environmentSnapshot?.() || null, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
+    return { grenadeAim: grenadeAim(), screen, paused, help, weaponPicker, selectedMap, best, settings: { muted, aimAssist }, audio: audio?.getSnapshot() || null, aim: { facing, manual: aimManual, targetId: game?.aimTarget?.id ?? null }, layout: { ...layout }, controls: controlBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { status: game.status, wave: game.wave, score: game.score, revivesRemaining: game.revivesRemaining, time: game.time, kills: game.kills, mapId: game.map.id, environment: game.environmentSnapshot?.() || null, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, reviveProtectionRemaining: game.player.reviveProtectionRemaining, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
   }
   resize({ width, height, pixelRatio });
   return { frame, resize, handleTouch, handleKey, handlePointer, pause, resume, getSnapshot };

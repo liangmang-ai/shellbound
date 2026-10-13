@@ -64,6 +64,8 @@ test('every gun has a distinct original, finite, unclipped waveform and packaged
     const samples = synthesizeSound(name);
     assert.ok(samples.some(sample => sample !== 0), `${name} is audible`);
     assert.ok(samples.every(sample => Number.isFinite(sample) && Math.abs(sample) <= .76), `${name} stays below full scale`);
+    assert.equal(samples[0], 0, `${name} has a silent attack boundary`);
+    assert.equal(samples.at(-1), 0, `${name} has a silent tail boundary`);
     assert.deepEqual(samples, synthesizeSound(name), `${name} generation is reproducible`);
     const wav = encodeWav(samples), view = new DataView(wav.buffer);
     assert.equal(Buffer.from(wav.subarray(0, 4)).toString(), 'RIFF');
@@ -86,7 +88,32 @@ test('game event mapping includes all guns, shields, impacts and map explosions'
   assert.equal(soundForEvent({ type: 'speedBoost', active: true }), 'boost');
   assert.equal(soundForEvent({ type: 'speedBoost', active: false }), null);
   assert.equal(soundForEvent({ type: 'pickup', pickupType: 'shield' }), 'pickup');
+  assert.equal(soundForEvent({ type: 'revive' }), 'revive');
   assert.equal(soundForEvent({ type: 'notAudio' }), null);
+});
+
+test('toy sounds remove noise and sharp edges while preserving soft body and six gun identities', () => {
+  const identities = new Set();
+  for (const [name, definition] of Object.entries(SOUND_DEFINITIONS)) {
+    assert.equal(definition.noise, 0, `${name} has no noise layer`);
+    const samples = synthesizeSound(name);
+    let power = 0, edgePower = 0, peak = 0, largestStep = 0;
+    for (let i = 0; i < samples.length; i++) {
+      power += samples[i] ** 2;
+      peak = Math.max(peak, Math.abs(samples[i]));
+      if (i > 0) { const step = samples[i] - samples[i - 1]; edgePower += step ** 2; largestStep = Math.max(largestStep, Math.abs(step)); }
+    }
+    assert.ok(peak >= .35 && peak <= .72, `${name} has audible body without clipping`);
+    assert.ok(largestStep < .20, `${name} never jumps sharply between adjacent samples`);
+    assert.ok(edgePower / power < .1, `${name} keeps high frequency roughness low`);
+    if (WEAPON_ORDER.includes(name)) {
+      identities.add(`${definition.tone}:${definition.endTone}:${definition.duration}`);
+      assert.ok(definition.duration <= .24, `${name} remains a short responsive shot`);
+    }
+  }
+  assert.equal(identities.size, 6, 'gun pitches and envelopes remain distinct');
+  assert.ok(SOUND_DEFINITIONS.explosion.tone <= 110 && SOUND_DEFINITIONS.explosion.endTone <= 50, 'explosion stays a soft low-frequency puff');
+  assert.notDeepEqual(SOUND_DEFINITIONS.revive.notes, SOUND_DEFINITIONS.bossCharge.notes, 'revive chime differs from Boss warning');
 });
 
 test('native audio uses local files, bounded reusable voices and preserves system mute settings', () => {
@@ -123,7 +150,7 @@ test('priority preserves warning/explosion voices and mute drops pending effects
   assert.equal(h.audio.getSnapshot().played, 1);
   h.audio.setMuted(false); h.audio.playEvents([{ type: 'bossCharge' }]);
   assert.equal(h.audio.getSnapshot().played, 2);
-  h.advance(400); h.nodes[0].ended();
+  h.advance(SOUND_DEFINITIONS.bossCharge.duration * 1000); h.nodes[0].ended();
   assert.equal(h.audio.getSnapshot().activeVoices, 0);
 });
 

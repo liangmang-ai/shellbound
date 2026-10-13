@@ -198,7 +198,7 @@ for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [
     assert.equal(arena.w, layout.w);
     assert.equal(arena.h, layout.h);
     assert.ok(arena.scale * layout.scale > .75, 'world objects remain enlarged on compact phones');
-    const circles = ['move', 'fire', 'reload', 'grenade'].map(role => ({ role, ...controls[role] }));
+    const circles = ['move', 'fire', 'reload', 'grenade', 'weapon'].map(role => ({ role, ...controls[role] }));
     for (const control of circles) {
       assert.ok(control.x - control.r >= 0 && control.x + control.r <= layout.w, `${control.role} fits horizontally`);
       assert.ok(control.y - control.r >= 0 && control.y + control.r <= layout.h, `${control.role} fits vertically`);

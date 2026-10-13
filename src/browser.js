@@ -29,7 +29,7 @@ canvas.addEventListener('pointermove', (event) => {
 canvas.addEventListener('pointerup', (event) => {
   if (event.pointerType !== 'touch') app.handlePointer('up', point(event));
 });
-canvas.addEventListener('pointercancel', () => app.handlePointer('up', { x: 0, y: 0, button: 0 }));
+canvas.addEventListener('pointercancel', () => app.handlePointer('cancel', { x: 0, y: 0, button: 0 }));
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 for (const type of ['start', 'move', 'end', 'cancel']) {
   canvas.addEventListener(`touch${type}`, (event) => {

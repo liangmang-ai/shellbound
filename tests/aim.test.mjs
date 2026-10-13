@@ -23,15 +23,17 @@ test('assist selects a live forward target and rejects rear, distant, and offscr
   assert.equal(findAimTarget(h.game, Math.PI / 2, h.viewport)?.id, 3);
 });
 
-test('assist respects walls and shotgun range', () => {
+test('assist respects walls and shotgun effective range while manual range stays unchanged', () => {
   const h = fixture();
   h.add(1, 920, 380);
   h.game.map.obstacles = [{ x: 740, y: 350, w: 40, h: 60 }];
   assert.equal(findAimTarget(h.game, 0, h.viewport), null);
   h.game.map.obstacles = [];
   h.game.player.currentWeapon = 'shotgun';
+  assert.equal(findAimTarget(h.game, 0, h.viewport), null, '280 is inside manual range but outside effective assist range');
+  h.game.enemies[0].x = 850;
   assert.equal(findAimTarget(h.game, 0, h.viewport)?.id, 1);
-  h.game.enemies[0].x = 950;
+  h.game.enemies[0].x = 865;
   assert.equal(findAimTarget(h.game, 0, h.viewport), null);
 });
 

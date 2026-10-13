@@ -41,7 +41,7 @@ test('factory has a distinct open layout and all stations, belts and spawns are 
   }
 });
 
-test('two pistol hits explode a barrel and nearby stations chain exactly once without hurting player', () => {
+test('two pistol hits explode a barrel and nearby stations chain exactly once with one player hit', () => {
   const game = factory(), barrel = game.barrels[0], nextBarrel = game.barrels[1];
   game.player.x = barrel.x; game.player.y = barrel.y;
   const target = enemy(game);
@@ -55,8 +55,9 @@ test('two pistol hits explode a barrel and nearby stations chain exactly once wi
   assert.equal(barrel.active, false);
   assert.equal(nextBarrel.active, false);
   assert.equal(game.kills, 1);
-  assert.equal(game.player.hp, 100);
-  assert.equal(game.player.shield, 35);
+  assert.equal(game.player.hp, 90);
+  assert.equal(game.player.shield, 0);
+  assert.equal(game.events.filter(event => event.type === 'damage').length, 1);
   const explosions = game.events.filter(event => event.type === 'barrelExplosion');
   assert.deepEqual(explosions.map(event => event.barrelId), [barrel.id, nextBarrel.id]);
   game.explodeBarrel(barrel);

@@ -1,7 +1,8 @@
 // Original, platform-independent game simulation. All coordinates are world pixels.
 export const MAX_WAVES = 10;
 export const BOSS_ATTACK = Object.freeze({ interval: 4, windup: 0.85, bulletSpeed: 310, damage: 18, radius: 7, life: 5, spread: 0.18 });
-export const BARREL_RULES = Object.freeze({ hp: 44, radius: 19, blastRadius: 145, damage: 155, respawnSeconds: 12 });
+export const BARREL_RULES = Object.freeze({ hp: 44, radius: 19, blastRadius: 145, damage: 155, playerDamage: 45, respawnSeconds: 12 });
+export const GRENADE_RULES = Object.freeze({ speed: 420, radius: 7, fuse: 1.05, defaultRange: 218.4, maxRange: 350, blastRadius: 135, damage: 190 });
 export const WEAPON_ORDER = ['pistol', 'smg', 'rifle', 'lmg', 'sniper', 'shotgun'];
 export const WEAPONS = Object.freeze({
   pistol: { label: '啵啵手枪', clipSize: 12, reserveMax: Infinity, damage: 22, fireInterval: 0.24, reloadTime: 0.85, bulletSpeed: 950, spread: 0.025, piercing: 1, color: '#ffe5ad' },
@@ -157,7 +158,7 @@ export class Game {
       ...this.map.start, radius: 18, angle: -Math.PI / 2, hp: 100, maxHp: 100,
       shield: 35, maxShield: 100, grenades: 3, maxGrenades: 8, speed: 225,
       currentWeapon: 'pistol', weapons: { pistol: this.makeAmmo('pistol') },
-      invulnerability: 0, speedMultiplier: 1, speedZoneId: null,
+      invulnerability: 0, reviveProtectionRemaining: 0, speedMultiplier: 1, speedZoneId: null,
     };
     // Fixed stations respawn independently; barrels never block navigation or add wave enemies.
     this.barrels = (this.map.barrelStations || []).map(station => ({
@@ -176,6 +177,7 @@ export class Game {
     this.status = 'intermission';
     this.score = 0;
     this.kills = 0;
+    this.revivesRemaining = 1;
     this.time = 0;
     this.waveKills = 0;
     this.waveTotal = 0;
@@ -226,15 +228,80 @@ export class Game {
     return true;
   }
 
-  throwGrenade() {
+  resolveGrenadeTarget(target) {
+    const p = this.player, rules = GRENADE_RULES;
+    const specified = Number.isFinite(target?.x) && Number.isFinite(target?.y);
+    const angle = finite(p.angle, -Math.PI / 2);
+    const dx = specified ? target.x - p.x : Math.cos(angle) * rules.defaultRange;
+    const dy = specified ? target.y - p.y : Math.sin(angle) * rules.defaultRange;
+    const magnitude = Math.max(Math.abs(dx), Math.abs(dy));
+    if (magnitude <= 1e-9) return { x: p.x, y: p.y };
+    // Normalize through the largest component so even huge finite targets stay finite.
+    const unitLength = Math.hypot(dx / magnitude, dy / magnitude);
+    const distance = Math.min(rules.maxRange, Math.hypot(dx, dy));
+    const vx = dx / magnitude / unitLength * distance, vy = dy / magnitude / unitLength * distance;
+    let fraction = 1;
+    if (vx > 0) fraction = Math.min(fraction, (this.map.width - rules.radius - p.x) / vx);
+    else if (vx < 0) fraction = Math.min(fraction, (rules.radius - p.x) / vx);
+    if (vy > 0) fraction = Math.min(fraction, (this.map.height - rules.radius - p.y) / vy);
+    else if (vy < 0) fraction = Math.min(fraction, (rules.radius - p.y) / vy);
+    fraction = clamp(fraction, 0, 1);
+    const nx = p.x + vx * fraction, ny = p.y + vy * fraction;
+    const pathLength = Math.hypot(nx - p.x, ny - p.y);
+    let wallFraction = 1;
+    for (const rect of this.map.obstacles) {
+      const hit = segmentRect(p.x, p.y, nx, ny, rect, rules.radius);
+      if (hit !== null) wallFraction = Math.min(wallFraction, Math.max(0, hit - .001 / Math.max(.001, pathLength)));
+    }
+    return {
+      x: clamp(p.x + (nx - p.x) * wallFraction, rules.radius, this.map.width - rules.radius),
+      y: clamp(p.y + (ny - p.y) * wallFraction, rules.radius, this.map.height - rules.radius),
+    };
+  }
+
+  throwGrenade(target) {
     if (this.status !== 'playing' || this.player.grenades <= 0) return false;
-    const p = this.player;
+    const p = this.player, point = this.resolveGrenadeTarget(target), rules = GRENADE_RULES;
+    const distance = Math.hypot(point.x - p.x, point.y - p.y);
+    const angle = distance > 1e-9 ? Math.atan2(point.y - p.y, point.x - p.x) : finite(p.angle, -Math.PI / 2);
     p.grenades -= 1;
-    const speed = 420;
-    this.grenades.push({ id: this.nextId++, x: p.x, y: p.y, radius: 7,
-      angle: p.angle, vx: Math.cos(p.angle) * speed, vy: Math.sin(p.angle) * speed,
-      fuse: 1.05, maxFuse: 1.05, travelRemaining: 0.52 });
+    this.grenades.push({ id: this.nextId++, x: p.x, y: p.y, radius: rules.radius,
+      angle, vx: Math.cos(angle) * rules.speed, vy: Math.sin(angle) * rules.speed,
+      targetX: point.x, targetY: point.y,
+      fuse: rules.fuse, maxFuse: rules.fuse, travelRemaining: distance / rules.speed });
     this.events.push({ type: 'grenade' });
+    return true;
+  }
+
+  revive() {
+    if (this.status !== 'dead' || this.revivesRemaining <= 0) return false;
+    this.events = [];
+    const p = this.player;
+    const base = this.findFreePoint(this.map.start.x, this.map.start.y, p.radius);
+    const safe = point => this.isBodyFree(point.x, point.y, p.radius)
+      && !this.enemies.some(enemy => enemy.hp > 0 && distanceSquared(point, enemy) < (enemy.radius + p.radius + 60) ** 2);
+    let point = base;
+    if (!safe(base)) {
+      const candidates = [];
+      for (let y = 40; y < this.map.height; y += 40) for (let x = 40; x < this.map.width; x += 40) {
+        const candidate = { x, y };
+        if (safe(candidate)) candidates.push(candidate);
+      }
+      candidates.sort((a, b) => distanceSquared(a, this.map.start) - distanceSquared(b, this.map.start));
+      point = candidates[0] || base;
+    }
+    p.x = point.x; p.y = point.y;
+    p.hp = p.maxHp; p.shield = 35;
+    p.invulnerability = 3; p.reviveProtectionRemaining = 3;
+    this.revivesRemaining -= 1;
+    this.status = 'playing';
+    this.bullets = this.bullets.filter(bullet => bullet.owner !== 'enemy');
+    this.grenades = [];
+    this.previousInput = {};
+    this.aimTarget = null;
+    this.flowFields.clear(); this.navigationTimer = 0;
+    this.syncSpeedZone();
+    this.events.push({ type: 'revive', x: p.x, y: p.y, remaining: this.revivesRemaining });
     return true;
   }
 
@@ -246,6 +313,7 @@ export class Game {
     const p = this.player;
     this.updateMap(dt);
     p.invulnerability = Math.max(0, p.invulnerability - dt);
+    p.reviveProtectionRemaining = Math.max(0, p.reviveProtectionRemaining - dt);
     for (const [id, ammo] of Object.entries(p.weapons)) {
       ammo.cooldown = Math.max(-dt, ammo.cooldown - dt);
       if (ammo.reloadRemaining > 0) {
@@ -276,7 +344,7 @@ export class Game {
       this.equipWeapon(owned[(owned.indexOf(p.currentWeapon) + 1) % owned.length]);
     }
     if (pressed('reload')) this.tryReload();
-    if (pressed('grenade')) this.throwGrenade();
+    if (pressed('grenade')) this.throwGrenade(input.grenadeTarget);
     this.previousInput = { grenade: Boolean(input.grenade), reload: Boolean(input.reload), weaponNext: Boolean(input.weaponNext) };
     if (this.status === 'playing') {
       if (input.shoot) this.fire();
@@ -655,6 +723,7 @@ export class Game {
 
   explodeBarrel(first) {
     const queue = [first];
+    let playerDamage = 0;
     for (let index = 0; index < queue.length; index++) {
       const barrel = queue[index];
       if (!barrel.active) continue;
@@ -664,27 +733,36 @@ export class Game {
       barrel.respawnRemaining = BARREL_RULES.respawnSeconds;
       this.addEffect('barrelExplosion', barrel.x, barrel.y, BARREL_RULES.blastRadius, 0.55, '#ffae66');
       this.damageBlast(barrel.x, barrel.y, BARREL_RULES.blastRadius, BARREL_RULES.damage);
+      const distance = Math.hypot(this.player.x - barrel.x, this.player.y - barrel.y);
+      if (distance <= BARREL_RULES.blastRadius + this.player.radius) {
+        playerDamage = Math.max(playerDamage, BARREL_RULES.playerDamage
+          * Math.max(.4, 1 - distance / (BARREL_RULES.blastRadius * 1.6)));
+      }
       this.events.push({ type: 'barrelExplosion', barrelId: barrel.id, x: barrel.x, y: barrel.y });
       for (const other of this.barrels) {
         if (other.active && distanceSquared(other, barrel) <= (BARREL_RULES.blastRadius + other.radius) ** 2) queue.push(other);
       }
     }
+    // One chain is one player hit, even when several station blasts overlap.
+    if (playerDamage > 0 && this.player.hp > 0 && this.player.invulnerability <= 0) this.damagePlayer(playerDamage);
   }
 
   updateGrenades(dt) {
     for (const grenade of this.grenades) {
       if (grenade.travelRemaining > 0) {
         const travel = Math.min(dt, grenade.travelRemaining);
-        const oldX = grenade.x, oldY = grenade.y;
-        this.moveBody(grenade, grenade.vx * travel, grenade.vy * travel);
-        grenade.travelRemaining -= travel;
-        if (Math.hypot(grenade.x - oldX, grenade.y - oldY) < Math.hypot(grenade.vx, grenade.vy) * travel * 0.5) grenade.travelRemaining = 0;
+        grenade.x += grenade.vx * travel; grenade.y += grenade.vy * travel;
+        grenade.travelRemaining = Math.max(0, grenade.travelRemaining - travel);
+        if (grenade.travelRemaining <= 1e-7) {
+          grenade.x = grenade.targetX; grenade.y = grenade.targetY;
+          grenade.travelRemaining = 0;
+        }
       }
       grenade.fuse -= dt;
       if (grenade.fuse <= 0) {
-        const blastRadius = 135;
+        const blastRadius = GRENADE_RULES.blastRadius;
         this.addEffect('explosion', grenade.x, grenade.y, blastRadius, 0.5, '#ffcf78');
-        this.damageBlast(grenade.x, grenade.y, blastRadius, 190);
+        this.damageBlast(grenade.x, grenade.y, blastRadius, GRENADE_RULES.damage);
         for (const barrel of this.barrels) {
           if (barrel.active && distanceSquared(barrel, grenade) <= (blastRadius + barrel.radius) ** 2) this.explodeBarrel(barrel);
         }
