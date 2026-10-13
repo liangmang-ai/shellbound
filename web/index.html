@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#101e25">
+    <title>蛋壳突围 · SHELLBOUND</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101e25; }
+      body { position: relative; font-family: system-ui, sans-serif; }
+      canvas { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; touch-action: none; outline: none; }
+      @media (min-width: 1000px) { canvas { max-width: 1600px; max-height: 1000px; } }
+    </style>
+  </head>
+  <body>
+    <canvas id="game" tabindex="0" aria-label="蛋壳突围，波次射击小游戏。WASD移动，鼠标瞄准并射击，数字键换枪，R换弹，G手雷，Esc暂停。"></canvas>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

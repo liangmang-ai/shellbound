@@ -1,0 +1,13 @@
+{
+  "description": "原创蛋形角色俯视生存射击 MVP",
+  "miniprogramRoot": "./",
+  "compileType": "game",
+  "projectname": "shellbound-mvp",
+  "appid": "touristappid",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "minified": false
+  }
+}

@@ -1,0 +1,600 @@
+// Original, platform-independent game simulation. All coordinates are world pixels.
+export const MAX_WAVES = 10;
+export const WEAPON_ORDER = ['pistol', 'smg', 'rifle', 'lmg', 'sniper'];
+export const WEAPONS = Object.freeze({
+  pistol: { label: '啵啵手枪', clipSize: 12, reserveMax: Infinity, damage: 22, fireInterval: 0.24, reloadTime: 0.85, bulletSpeed: 950, spread: 0.025, piercing: 1, color: '#ffe5ad' },
+  smg: { label: '跳豆冲锋枪', clipSize: 30, reserveMax: 150, damage: 15, fireInterval: 0.075, reloadTime: 1.15, bulletSpeed: 900, spread: 0.11, piercing: 1, color: '#7ee8df' },
+  rifle: { label: '薄荷步枪', clipSize: 24, reserveMax: 120, damage: 34, fireInterval: 0.16, reloadTime: 1.25, bulletSpeed: 1200, spread: 0.035, piercing: 1, color: '#a5ed8b' },
+  lmg: { label: '爆米花机枪', clipSize: 70, reserveMax: 280, damage: 24, fireInterval: 0.09, reloadTime: 2.2, bulletSpeed: 1100, spread: 0.085, piercing: 1, color: '#ffbe76' },
+  sniper: { label: '星光大狙', clipSize: 5, reserveMax: 30, damage: 140, fireInterval: 0.85, reloadTime: 1.7, bulletSpeed: 2200, spread: 0, piercing: 4, color: '#c9b5ff' },
+});
+
+export const MAPS = [
+  {
+    id: 'courtyard', name: '薄荷庭院', theme: 'mint', width: 1280, height: 760,
+    start: { x: 640, y: 380 },
+    obstacles: [
+      { x: 240, y: 160, w: 160, h: 80 }, { x: 880, y: 160, w: 160, h: 80 },
+      { x: 240, y: 520, w: 160, h: 80 }, { x: 880, y: 520, w: 160, h: 80 },
+      { x: 560, y: 120, w: 160, h: 80 }, { x: 560, y: 560, w: 160, h: 80 },
+    ],
+    spawnPoints: [{ x: 55, y: 95 }, { x: 1225, y: 95 }, { x: 55, y: 665 }, { x: 1225, y: 665 }, { x: 640, y: 45 }, { x: 640, y: 715 }],
+  },
+  {
+    id: 'greenhouse', name: '落日温室', theme: 'peach', width: 1280, height: 760,
+    start: { x: 640, y: 380 },
+    obstacles: [
+      { x: 200, y: 200, w: 240, h: 80 }, { x: 200, y: 440, w: 240, h: 80 },
+      { x: 840, y: 200, w: 240, h: 80 }, { x: 840, y: 440, w: 240, h: 80 },
+      { x: 600, y: 80, w: 80, h: 200 }, { x: 600, y: 480, w: 80, h: 200 },
+    ],
+    spawnPoints: [{ x: 55, y: 380 }, { x: 1225, y: 380 }, { x: 300, y: 45 }, { x: 980, y: 45 }, { x: 300, y: 715 }, { x: 980, y: 715 }],
+  },
+];
+
+const ENEMY_TYPES = {
+  grunt: { radius: 17, hp: 40, speed: 67, damage: 12, score: 10 },
+  runner: { radius: 14, hp: 28, speed: 116, damage: 9, score: 15 },
+  tank: { radius: 25, hp: 170, speed: 44, damage: 22, score: 35 },
+};
+const UNLOCKS = { 1: 'smg', 3: 'rifle', 5: 'lmg', 7: 'sniper' };
+const TAU = Math.PI * 2;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const distanceSquared = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+const finite = (v, fallback = 0) => Number.isFinite(v) ? v : fallback;
+
+function seededRandom(seed) {
+  let state = (Number(seed) >>> 0) || 1;
+  return () => {
+    state += 0x6D2B79F5;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// First intersection of a segment and a rectangle, in segment fractions [0,1].
+export function segmentRect(ax, ay, bx, by, rect, padding = 0) {
+  const dx = bx - ax, dy = by - ay;
+  let lo = 0, hi = 1;
+  for (const [origin, direction, min, max] of [
+    [ax, dx, rect.x - padding, rect.x + rect.w + padding],
+    [ay, dy, rect.y - padding, rect.y + rect.h + padding],
+  ]) {
+    if (Math.abs(direction) < 1e-9) {
+      if (origin < min || origin > max) return null;
+    } else {
+      let a = (min - origin) / direction, b = (max - origin) / direction;
+      if (a > b) [a, b] = [b, a];
+      lo = Math.max(lo, a); hi = Math.min(hi, b);
+      if (lo > hi) return null;
+    }
+  }
+  return lo;
+}
+
+function segmentCircle(ax, ay, bx, by, cx, cy, radius) {
+  const dx = bx - ax, dy = by - ay, ox = ax - cx, oy = ay - cy;
+  const a = dx * dx + dy * dy;
+  const c = ox * ox + oy * oy - radius * radius;
+  if (c <= 0) return 0;
+  if (a < 1e-9) return null;
+  const b = 2 * (ox * dx + oy * dy), discriminant = b * b - 4 * a * c;
+  if (discriminant < 0) return null;
+  const t = (-b - Math.sqrt(discriminant)) / (2 * a);
+  return t >= 0 && t <= 1 ? t : null;
+}
+
+// Navigation tests the open interior so a body touching a wall can move away.
+// A circle-expanded rectangle has rounded corners, matching isBodyFree exactly.
+function segmentRectInterior(ax, ay, bx, by, rect) {
+  let lo = 0, hi = 1;
+  for (const [origin, direction, min, max] of [
+    [ax, bx - ax, rect.x, rect.x + rect.w],
+    [ay, by - ay, rect.y, rect.y + rect.h],
+  ]) {
+    if (Math.abs(direction) < 1e-9) {
+      if (origin <= min || origin >= max) return null;
+    } else {
+      let a = (min - origin) / direction, b = (max - origin) / direction;
+      if (a > b) [a, b] = [b, a];
+      lo = Math.max(lo, a); hi = Math.min(hi, b);
+      if (hi - lo <= 1e-9) return null;
+    }
+  }
+  return lo;
+}
+
+function segmentCircleInterior(ax, ay, bx, by, cx, cy, radius) {
+  const dx = bx - ax, dy = by - ay, ox = ax - cx, oy = ay - cy;
+  const a = dx * dx + dy * dy;
+  const c = ox * ox + oy * oy - radius * radius;
+  if (a < 1e-9) return c < 0 ? 0 : null;
+  const b = 2 * (ox * dx + oy * dy), discriminant = b * b - 4 * a * c;
+  if (discriminant <= 0) return null;
+  const root = Math.sqrt(discriminant);
+  const lo = Math.max(0, (-b - root) / (2 * a));
+  const hi = Math.min(1, (-b + root) / (2 * a));
+  return hi - lo > 1e-9 ? lo : null;
+}
+
+export function segmentRoundedRect(ax, ay, bx, by, rect, radius) {
+  if (radius <= 0) return segmentRectInterior(ax, ay, bx, by, rect);
+  const fractions = [
+    segmentRectInterior(ax, ay, bx, by, { x: rect.x - radius, y: rect.y, w: rect.w + radius * 2, h: rect.h }),
+    segmentRectInterior(ax, ay, bx, by, { x: rect.x, y: rect.y - radius, w: rect.w, h: rect.h + radius * 2 }),
+  ];
+  for (const x of [rect.x, rect.x + rect.w]) for (const y of [rect.y, rect.y + rect.h]) {
+    fractions.push(segmentCircleInterior(ax, ay, bx, by, x, y, radius));
+  }
+  const hits = fractions.filter(value => value !== null);
+  return hits.length ? Math.min(...hits) : null;
+}
+
+export class Game {
+  constructor({ seed = 1, mapId = 'courtyard' } = {}) {
+    this.map = MAPS.find(map => map.id === mapId) || MAPS[0];
+    this.random = seededRandom(seed);
+    this.nextId = 1;
+    this.player = {
+      ...this.map.start, radius: 18, angle: -Math.PI / 2, hp: 100, maxHp: 100,
+      shield: 35, maxShield: 100, grenades: 3, maxGrenades: 8, speed: 225,
+      currentWeapon: 'pistol', weapons: { pistol: this.makeAmmo('pistol') },
+      invulnerability: 0,
+    };
+    this.enemies = [];
+    this.bullets = [];
+    this.grenades = [];
+    this.pickups = [];
+    this.effects = [];
+    this.events = [];
+    this.wave = 0;
+    this.maxWaves = MAX_WAVES;
+    this.status = 'intermission';
+    this.intermissionRemaining = 0;
+    this.score = 0;
+    this.kills = 0;
+    this.time = 0;
+    this.waveKills = 0;
+    this.waveTotal = 0;
+    this.spawnQueue = [];
+    this.spawnTimer = 0;
+    this.previousInput = {};
+    this.flowFields = new Map();
+    this.navigationTimer = 0;
+    this.startNextWave();
+  }
+
+  makeAmmo(id) {
+    const def = WEAPONS[id];
+    return { clip: def.clipSize, reserve: def.reserveMax, reloadRemaining: 0, cooldown: 0 };
+  }
+
+  startNextWave() {
+    if (this.status !== 'intermission' || this.wave >= MAX_WAVES) return false;
+    this.wave += 1;
+    this.waveKills = 0;
+    this.waveTotal = 5 + this.wave * 3;
+    this.status = 'playing';
+    this.intermissionRemaining = 0;
+    this.spawnTimer = 0.25;
+    this.spawnQueue = [];
+    for (let i = 0; i < this.waveTotal; i++) {
+      const roll = this.random();
+      const type = this.wave >= 3 && roll < 0.12 + this.wave * 0.013 ? 'tank'
+        : this.wave >= 2 && roll < 0.35 + this.wave * 0.018 ? 'runner' : 'grunt';
+      this.spawnQueue.push(type);
+    }
+    this.events.push({ type: 'wave', wave: this.wave });
+    return true;
+  }
+
+  equipWeapon(id) {
+    if (!this.player.weapons[id]) return false;
+    this.player.currentWeapon = id;
+    this.events.push({ type: 'equip', weaponId: id });
+    return true;
+  }
+
+  tryReload() {
+    const id = this.player.currentWeapon, ammo = this.player.weapons[id], def = WEAPONS[id];
+    if (ammo.reloadRemaining > 0 || ammo.clip >= def.clipSize || ammo.reserve <= 0) return false;
+    ammo.reloadRemaining = def.reloadTime;
+    this.events.push({ type: 'reload', weaponId: id });
+    return true;
+  }
+
+  throwGrenade() {
+    if (this.status !== 'playing' || this.player.grenades <= 0) return false;
+    const p = this.player;
+    p.grenades -= 1;
+    const speed = 420;
+    this.grenades.push({ id: this.nextId++, x: p.x, y: p.y, radius: 7,
+      angle: p.angle, vx: Math.cos(p.angle) * speed, vy: Math.sin(p.angle) * speed,
+      fuse: 1.05, maxFuse: 1.05, travelRemaining: 0.52 });
+    this.events.push({ type: 'grenade' });
+    return true;
+  }
+
+  update(dt, input = {}) {
+    dt = clamp(finite(dt), 0, 0.1);
+    this.events = [];
+    if (dt <= 0 || this.status === 'dead' || this.status === 'won') return;
+    this.time += dt;
+    const p = this.player;
+    p.invulnerability = Math.max(0, p.invulnerability - dt);
+    for (const [id, ammo] of Object.entries(p.weapons)) {
+      ammo.cooldown = Math.max(-dt, ammo.cooldown - dt);
+      if (ammo.reloadRemaining > 0) {
+        ammo.reloadRemaining = Math.max(0, ammo.reloadRemaining - dt);
+        if (ammo.reloadRemaining === 0) {
+          const fill = Math.min(WEAPONS[id].clipSize - ammo.clip, ammo.reserve);
+          ammo.clip += fill;
+          if (Number.isFinite(ammo.reserve)) ammo.reserve -= fill;
+          this.events.push({ type: 'reloaded', weaponId: id });
+        }
+      }
+    }
+    let mx = clamp(finite(input.moveX), -1, 1), my = clamp(finite(input.moveY), -1, 1);
+    const movementLength = Math.hypot(mx, my);
+    if (movementLength > 1) { mx /= movementLength; my /= movementLength; }
+    this.moveBody(p, mx * p.speed * dt, my * p.speed * dt);
+    if (Number.isFinite(input.aimX) && Number.isFinite(input.aimY)) {
+      const dx = input.aimX - p.x, dy = input.aimY - p.y;
+      if (Math.hypot(dx, dy) > 0.5) p.angle = Math.atan2(dy, dx);
+    }
+    const pressed = key => Boolean(input[key]) && !this.previousInput[key];
+    if (input.weaponSlot !== undefined && input.weaponSlot !== null) {
+      const id = typeof input.weaponSlot === 'number' ? WEAPON_ORDER[input.weaponSlot] : input.weaponSlot;
+      if (id !== p.currentWeapon) this.equipWeapon(id);
+    }
+    if (pressed('weaponNext')) {
+      const owned = WEAPON_ORDER.filter(id => p.weapons[id]);
+      this.equipWeapon(owned[(owned.indexOf(p.currentWeapon) + 1) % owned.length]);
+    }
+    if (pressed('reload')) this.tryReload();
+    if (pressed('grenade')) this.throwGrenade();
+    this.previousInput = { grenade: Boolean(input.grenade), reload: Boolean(input.reload), weaponNext: Boolean(input.weaponNext) };
+    if (this.status === 'playing') {
+      if (input.shoot) this.fire();
+      this.updateSpawns(dt);
+      this.updateEnemies(dt);
+      this.updateBullets(dt);
+      this.updateGrenades(dt);
+    }
+    this.updatePickups(dt);
+    for (const effect of this.effects) effect.life -= dt;
+    this.effects = this.effects.filter(effect => effect.life > 0);
+    if (p.hp <= 0) {
+      p.hp = 0;
+      this.status = 'dead';
+      this.events.push({ type: 'dead' });
+    } else if (this.status === 'playing' && this.spawnQueue.length === 0 && this.enemies.length === 0) {
+      this.clearWave();
+    } else if (this.status === 'intermission') {
+      this.intermissionRemaining -= dt;
+      if (this.intermissionRemaining <= 0) this.startNextWave();
+    }
+  }
+
+  fire() {
+    const p = this.player, id = p.currentWeapon, def = WEAPONS[id], ammo = p.weapons[id];
+    if (ammo.reloadRemaining > 0) return;
+    if (ammo.clip <= 0) { this.tryReload(); return; }
+    // Carry fractional cadence across frames, with a strict bound for stalled frames.
+    let shots = 0;
+    while (ammo.cooldown <= 0 && ammo.clip > 0 && shots < 3) {
+      shots += 1;
+      ammo.clip -= 1;
+      ammo.cooldown += def.fireInterval;
+      const angle = p.angle + (this.random() * 2 - 1) * def.spread;
+      const offset = p.radius + 9;
+      const muzzleX = p.x + Math.cos(angle) * offset;
+      const muzzleY = p.y + Math.sin(angle) * offset;
+      // Keep the muzzle in the arena and prevent shooting through an adjacent wall.
+      const muzzleBlocked = this.map.obstacles.some(rect => segmentRect(p.x, p.y, muzzleX, muzzleY, rect) !== null);
+      const x = muzzleBlocked ? p.x : muzzleX, y = muzzleBlocked ? p.y : muzzleY;
+      this.bullets.push({ id: this.nextId++, x, y, prevX: x, prevY: y, radius: 3,
+        vx: Math.cos(angle) * def.bulletSpeed, vy: Math.sin(angle) * def.bulletSpeed,
+        damage: def.damage, remainingHits: def.piercing, hitIds: new Set(),
+        owner: 'player', weapon: id, life: id === 'sniper' ? 1.1 : 0.95 });
+      this.events.push({ type: 'shot', weaponId: id, x, y });
+    }
+    if (ammo.clip === 0) this.tryReload();
+  }
+
+  updateSpawns(dt) {
+    this.spawnTimer -= dt;
+    if (this.spawnQueue.length === 0 || this.spawnTimer > 0 || this.enemies.length >= 28) return;
+    const type = this.spawnQueue.shift(), def = ENEMY_TYPES[type];
+    const available = this.map.spawnPoints.filter(point => distanceSquared(point, this.player) > 220 ** 2);
+    const points = available.length ? available : this.map.spawnPoints;
+    const point = points[Math.floor(this.random() * points.length)];
+    const hp = Math.round(def.hp * (1 + (this.wave - 1) * 0.045));
+    const enemy = { id: this.nextId++, x: point.x, y: point.y, type, radius: def.radius,
+      hp, maxHp: hp, speed: def.speed * (1 + (this.wave - 1) * 0.025),
+      damage: def.damage, angle: 0, hitFlash: 0 };
+    this.enemies.push(enemy);
+    this.spawnTimer += Math.max(0.24, 0.7 - this.wave * 0.036);
+  }
+
+  isBodyFree(x, y, radius) {
+    if (x < radius || y < radius || x > this.map.width - radius || y > this.map.height - radius) return false;
+    return !this.map.obstacles.some(rect => {
+      const nearX = clamp(x, rect.x, rect.x + rect.w), nearY = clamp(y, rect.y, rect.y + rect.h);
+      return (x - nearX) ** 2 + (y - nearY) ** 2 < radius ** 2;
+    });
+  }
+
+  moveBody(body, dx, dy) {
+    // Resolve each axis so movement slides along walls. Substeps prevent tunnelling.
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 8));
+    for (let i = 0; i < steps; i++) {
+      const x = clamp(body.x + dx / steps, body.radius, this.map.width - body.radius);
+      if (this.isBodyFree(x, body.y, body.radius)) body.x = x;
+      const y = clamp(body.y + dy / steps, body.radius, this.map.height - body.radius);
+      if (this.isBodyFree(body.x, y, body.radius)) body.y = y;
+    }
+  }
+
+  clearPath(ax, ay, bx, by, radius) {
+    return !this.map.obstacles.some(rect => segmentRoundedRect(ax, ay, bx, by, rect, radius) !== null);
+  }
+
+  buildFlowField(radius) {
+    const cell = 40, cols = Math.ceil(this.map.width / cell), rows = Math.ceil(this.map.height / cell);
+    const valid = new Uint8Array(cols * rows), distances = new Int16Array(cols * rows).fill(-1);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const px = x * cell + cell / 2;
+      const py = y * cell + cell / 2;
+      valid[y * cols + x] = Number(this.isBodyFree(px, py, radius + 1));
+    }
+    let goal = -1, best = Infinity;
+    for (let i = 0; i < valid.length; i++) if (valid[i]) {
+      const px = i % cols * cell + cell / 2, py = Math.floor(i / cols) * cell + cell / 2;
+      const d = (px - this.player.x) ** 2 + (py - this.player.y) ** 2;
+      if (d < best) { best = d; goal = i; }
+    }
+    const queue = goal >= 0 ? [goal] : [];
+    if (goal >= 0) distances[goal] = 0;
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const index = queue[cursor], x = index % cols, y = Math.floor(index / cols);
+      for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + ox, ny = y + oy, next = ny * cols + nx;
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows || !valid[next] || distances[next] >= 0) continue;
+        if (!this.clearPath(x * cell + cell / 2, y * cell + cell / 2, nx * cell + cell / 2, ny * cell + cell / 2, radius + 1)) continue;
+        distances[next] = distances[index] + 1;
+        queue.push(next);
+      }
+    }
+    return { cell, cols, rows, valid, distances };
+  }
+
+  navigationTarget(enemy) {
+    const radius = enemy.radius - 0.01;
+    if (this.clearPath(enemy.x, enemy.y, this.player.x, this.player.y, radius)) return this.player;
+    let field = this.flowFields.get(enemy.radius);
+    if (!field) { field = this.buildFlowField(enemy.radius); this.flowFields.set(enemy.radius, field); }
+    const cx = clamp(Math.floor(enemy.x / field.cell), 0, field.cols - 1);
+    const cy = clamp(Math.floor(enemy.y / field.cell), 0, field.rows - 1);
+    let best = null, bestCost = Infinity;
+    // A nearby reachable grid center lets an enemy recover from a wall-adjacent cell.
+    for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++) {
+      const x = cx + ox, y = cy + oy;
+      if (x < 0 || y < 0 || x >= field.cols || y >= field.rows) continue;
+      const index = y * field.cols + x;
+      if (!field.valid[index] || field.distances[index] < 0) continue;
+      const target = { x: x * field.cell + field.cell / 2, y: y * field.cell + field.cell / 2 };
+      if (!this.clearPath(enemy.x, enemy.y, target.x, target.y, radius)) continue;
+      // Slightly prefer progress along the field over staying on an equal-cost center.
+      const cost = field.distances[index] * field.cell + Math.hypot(target.x - enemy.x, target.y - enemy.y) * 0.72;
+      if (cost < bestCost) { best = target; bestCost = cost; }
+    }
+    return best || this.player;
+  }
+
+  updateEnemies(dt) {
+    this.navigationTimer -= dt;
+    if (this.navigationTimer <= 0) { this.flowFields.clear(); this.navigationTimer = 0.4; }
+    for (const enemy of this.enemies) {
+      enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
+      const target = this.navigationTarget(enemy);
+      let dx = target.x - enemy.x, dy = target.y - enemy.y;
+      const length = Math.hypot(dx, dy);
+      if (length > 1) { dx /= length; dy /= length; } else { dx = 0; dy = 0; }
+      enemy.angle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
+      this.moveBody(enemy, dx * enemy.speed * dt, dy * enemy.speed * dt);
+    }
+    // Soft separation reduces visual stacking; enemies never become solid player walls.
+    for (let i = 0; i < this.enemies.length; i++) for (let j = i + 1; j < this.enemies.length; j++) {
+      const a = this.enemies[i], b = this.enemies[j];
+      let dx = a.x - b.x, dy = a.y - b.y, d = Math.hypot(dx, dy);
+      const min = (a.radius + b.radius) * 0.82;
+      if (d >= min) continue;
+      if (d < 0.01) { dx = (a.id % 2 ? 1 : -1); dy = 0.5; d = Math.hypot(dx, dy); }
+      const push = Math.min(2.5, (min - d) * 0.2);
+      this.moveBody(a, dx / d * push, dy / d * push);
+      this.moveBody(b, -dx / d * push, -dy / d * push);
+    }
+    if (this.player.invulnerability <= 0) {
+      // At most one touch hit per grace interval, independent of crowd size.
+      const contact = this.enemies.find(enemy => distanceSquared(enemy, this.player) < (enemy.radius + this.player.radius - 2) ** 2);
+      if (contact) this.damagePlayer(contact.damage);
+    }
+  }
+
+  damagePlayer(amount) {
+    amount = Math.max(0, finite(amount));
+    const absorbed = Math.min(this.player.shield, amount);
+    this.player.shield -= absorbed;
+    this.player.hp = Math.max(0, this.player.hp - (amount - absorbed));
+    this.player.invulnerability = 0.65;
+    this.addEffect('damage', this.player.x, this.player.y, 34, 0.25, '#ff6b81');
+    this.events.push({ type: 'damage', amount, absorbed });
+  }
+
+  updateBullets(dt) {
+    for (const bullet of this.bullets) {
+      bullet.prevX = bullet.x; bullet.prevY = bullet.y;
+      const nx = bullet.x + bullet.vx * dt, ny = bullet.y + bullet.vy * dt;
+      let wallT = 1;
+      for (const rect of this.map.obstacles) {
+        const t = segmentRect(bullet.x, bullet.y, nx, ny, rect, bullet.radius);
+        if (t !== null) wallT = Math.min(wallT, t);
+      }
+      const hits = [];
+      for (const enemy of this.enemies) {
+        if (enemy.hp <= 0 || bullet.hitIds.has(enemy.id)) continue;
+        const t = segmentCircle(bullet.x, bullet.y, nx, ny, enemy.x, enemy.y, enemy.radius + bullet.radius);
+        if (t !== null && t < wallT) hits.push({ enemy, t });
+      }
+      hits.sort((a, b) => a.t - b.t);
+      let endT = wallT;
+      for (const { enemy, t } of hits) {
+        this.damageEnemy(enemy, bullet.damage);
+        bullet.hitIds.add(enemy.id);
+        bullet.remainingHits -= 1;
+        if (bullet.remainingHits <= 0) { endT = t; bullet.life = 0; break; }
+      }
+      bullet.x += (nx - bullet.x) * endT;
+      bullet.y += (ny - bullet.y) * endT;
+      bullet.life -= dt;
+      if (wallT < 1 || bullet.x < 0 || bullet.y < 0 || bullet.x > this.map.width || bullet.y > this.map.height) bullet.life = 0;
+    }
+    this.bullets = this.bullets.filter(bullet => bullet.life > 0);
+    this.enemies = this.enemies.filter(enemy => enemy.hp > 0);
+  }
+
+  damageEnemy(enemy, damage) {
+    if (enemy.hp <= 0) return;
+    enemy.hp -= damage;
+    enemy.hitFlash = 0.09;
+    this.addEffect('hit', enemy.x, enemy.y, 12, 0.14, '#fff1c9');
+    if (enemy.hp <= 0) {
+      this.kills += 1; this.waveKills += 1;
+      this.score += ENEMY_TYPES[enemy.type]?.score || 10;
+      this.events.push({ type: 'kill', enemyType: enemy.type, x: enemy.x, y: enemy.y });
+      this.dropLoot(enemy.x, enemy.y);
+    }
+  }
+
+  updateGrenades(dt) {
+    for (const grenade of this.grenades) {
+      if (grenade.travelRemaining > 0) {
+        const travel = Math.min(dt, grenade.travelRemaining);
+        const oldX = grenade.x, oldY = grenade.y;
+        this.moveBody(grenade, grenade.vx * travel, grenade.vy * travel);
+        grenade.travelRemaining -= travel;
+        if (Math.hypot(grenade.x - oldX, grenade.y - oldY) < Math.hypot(grenade.vx, grenade.vy) * travel * 0.5) grenade.travelRemaining = 0;
+      }
+      grenade.fuse -= dt;
+      if (grenade.fuse <= 0) {
+        const blastRadius = 135;
+        this.addEffect('explosion', grenade.x, grenade.y, blastRadius, 0.5, '#ffcf78');
+        for (const enemy of this.enemies) {
+          const distance = Math.hypot(enemy.x - grenade.x, enemy.y - grenade.y);
+          if (distance <= blastRadius + enemy.radius) this.damageEnemy(enemy, 190 * Math.max(0.4, 1 - distance / (blastRadius * 1.6)));
+        }
+        this.events.push({ type: 'explosion', x: grenade.x, y: grenade.y });
+      }
+    }
+    this.grenades = this.grenades.filter(grenade => grenade.fuse > 0);
+    this.enemies = this.enemies.filter(enemy => enemy.hp > 0);
+  }
+
+  addEffect(type, x, y, radius, life, color) {
+    this.effects.push({ id: this.nextId++, type, x, y, radius, life, maxLife: life, color });
+    if (this.effects.length > 160) this.effects.shift();
+  }
+
+  spawnPickup(type, x, y, extra = {}) {
+    const point = this.findFreePoint(x, y, 12);
+    const pickup = { id: this.nextId++, type, ...point, radius: 12, ttl: 28, ...extra };
+    this.pickups.push(pickup);
+    if (this.pickups.length > 70) this.pickups.shift();
+    return pickup;
+  }
+
+  findFreePoint(x, y, radius) {
+    x = clamp(x, radius + 3, this.map.width - radius - 3);
+    y = clamp(y, radius + 3, this.map.height - radius - 3);
+    if (this.isBodyFree(x, y, radius)) return { x, y };
+    for (let ring = 24; ring <= 192; ring += 24) for (let i = 0; i < 16; i++) {
+      const angle = i / 16 * TAU, px = clamp(x + Math.cos(angle) * ring, radius, this.map.width - radius);
+      const py = clamp(y + Math.sin(angle) * ring, radius, this.map.height - radius);
+      if (this.isBodyFree(px, py, radius)) return { x: px, y: py };
+    }
+    return { ...this.map.start };
+  }
+
+  dropLoot(x, y) {
+    const roll = this.random();
+    if (roll < 0.13) this.spawnPickup('ammo', x, y);
+    else if (roll < 0.19) this.spawnPickup('shield', x, y);
+    else if (roll < 0.235) this.spawnPickup('health', x, y);
+    else if (roll < 0.28) this.spawnPickup('grenade', x, y);
+    else if (roll < 0.32) {
+      const available = WEAPON_ORDER.filter(id => id !== 'pistol' && this.player.weapons[id]);
+      if (available.length) this.spawnPickup('weapon', x, y, { weaponId: available[Math.floor(this.random() * available.length)] });
+      else this.spawnPickup('ammo', x, y);
+    }
+  }
+
+  collectPickup(pickup) {
+    const p = this.player;
+    if (pickup.type === 'weapon') {
+      const id = pickup.weaponId;
+      if (!WEAPONS[id]) return;
+      const unlocked = !p.weapons[id];
+      p.weapons[id] = this.makeAmmo(id);
+      this.events.push({ type: unlocked ? 'unlock' : 'ammo', weaponId: id });
+    } else if (pickup.type === 'ammo') {
+      for (const [id, ammo] of Object.entries(p.weapons)) {
+        ammo.clip = WEAPONS[id].clipSize;
+        ammo.reserve = WEAPONS[id].reserveMax;
+        ammo.reloadRemaining = 0;
+      }
+    } else if (pickup.type === 'shield') p.shield = Math.min(p.maxShield, p.shield + 40);
+    else if (pickup.type === 'health') p.hp = Math.min(p.maxHp, p.hp + 25);
+    else if (pickup.type === 'grenade') p.grenades = Math.min(p.maxGrenades, p.grenades + 2);
+    this.addEffect('pickup', pickup.x, pickup.y, 28, 0.35, '#b7ffd8');
+    this.events.push({ type: 'pickup', pickupType: pickup.type, weaponId: pickup.weaponId });
+  }
+
+  updatePickups(dt) {
+    for (const pickup of this.pickups) {
+      pickup.ttl -= dt;
+      if (this.player.hp > 0 && distanceSquared(pickup, this.player) <= (pickup.radius + this.player.radius + 9) ** 2) {
+        this.collectPickup(pickup);
+        pickup.ttl = 0;
+      }
+    }
+    this.pickups = this.pickups.filter(pickup => pickup.ttl > 0);
+  }
+
+  clearWave() {
+    if (this.status !== 'playing') return false;
+    this.bullets = [];
+    this.grenades = [];
+    this.score += this.wave * 100;
+    this.events.push({ type: 'waveClear', wave: this.wave });
+    if (this.wave >= MAX_WAVES) {
+      this.status = 'won';
+      this.events.push({ type: 'won' });
+      return;
+    }
+    this.status = 'intermission';
+    this.intermissionRemaining = 6;
+    const p = this.player;
+    const drops = [['ammo', -55, 0], ['shield', 55, 0], ['grenade', 0, 55], ['health', 0, -55]];
+    for (const [type, dx, dy] of drops) this.spawnPickup(type, p.x + dx, p.y + dy, { guaranteed: true });
+    const unlock = UNLOCKS[this.wave];
+    if (unlock) {
+      // Permanent wave reward guarantees progression even if a player misses a drop.
+      p.weapons[unlock] ||= this.makeAmmo(unlock);
+      this.spawnPickup('weapon', p.x + 82, p.y + 55, { weaponId: unlock, guaranteed: true });
+      this.events.push({ type: 'unlock', weaponId: unlock });
+    }
+  }
+}
