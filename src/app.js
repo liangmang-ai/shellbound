@@ -10,7 +10,7 @@ const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 export function createApp({ canvas, width, height, pixelRatio = 1, storage, platform = 'web' }) {
   const ctx = canvas.getContext('2d');
   let size = { width, height, pixelRatio }, layout, game = null, screen = 'menu', selectedMap = MAPS[0].id;
-  let paused = false, help = false, lastTimestamp = null, clock = 0, pointer = null, shooting = false;
+  let paused = false, help = false, weaponPicker = false, lastTimestamp = null, clock = 0, pointer = null, shooting = false;
   let buttons = [], touches = new Map(), keys = new Set(), actions = {}, toast = '', toastUntil = 0, resultSaved = false;
   let best = { wave: 0, score: 0 };
   try { best = { ...best, ...JSON.parse(storage?.getItem('shellbound.best.v1') || '{}') }; } catch { /* A save is optional. */ }
@@ -21,26 +21,41 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     canvas.width = Math.round(size.width * size.pixelRatio);
     canvas.height = Math.round(size.height * size.pixelRatio);
     const compact = size.height < 620 || size.width < 1000;
-    const w = compact ? 960 : 1280, h = compact ? 540 : 800;
-    const scale = Math.min(size.width / w, size.height / h);
+    const baseHeight = compact ? 540 : 800;
+    const scale = screen === 'game' ? Math.min(size.height / baseHeight, size.width / 960) : Math.min(size.width / (compact ? 960 : 1280), size.height / baseHeight);
+    const w = screen === 'game' ? size.width / scale : compact ? 960 : 1280;
+    const h = screen === 'game' ? size.height / scale : baseHeight;
     layout = { w, h, compact, scale, ox: (size.width - w * scale) / 2, oy: (size.height - h * scale) / 2 };
+    buttons = [];
     clearInput();
   }
   function logical(point) { return { x: (point.x - layout.ox) / layout.scale, y: (point.y - layout.oy) / layout.scale }; }
   function arenaBounds() {
-    const area = { x: 32, y: layout.compact ? 78 : 100, w: layout.w - 64, h: layout.h - (layout.compact ? 164 : 230) };
+    const area = { x: 0, y: 0, w: layout.w, h: layout.h };
     if (!game) return area;
-    const scale = Math.min(area.w / game.map.width, area.h / game.map.height);
-    return { x: area.x + (area.w - game.map.width * scale) / 2, y: area.y + (area.h - game.map.height * scale) / 2, w: game.map.width * scale, h: game.map.height * scale, scale };
+    const scale = Math.max(area.w / game.map.width, area.h / game.map.height, layout.compact ? 1.35 : 1.12);
+    const camera = {
+      x: clamp(game.player.x - area.w / scale / 2, 0, Math.max(0, game.map.width - area.w / scale)),
+      y: clamp(game.player.y - area.h / scale / 2, 0, Math.max(0, game.map.height - area.h / scale)),
+    };
+    return { ...area, scale, camera };
   }
-  function world(point) { const arena = arenaBounds(); return { x: (point.x - arena.x) / arena.scale, y: (point.y - arena.y) / arena.scale }; }
-  function clearInput() { keys.clear(); touches.clear(); shooting = false; actions = {}; }
+  function world(point) { const arena = arenaBounds(); return { x: arena.camera.x + (point.x - arena.x) / arena.scale, y: arena.camera.y + (point.y - arena.y) / arena.scale }; }
+  function controlBounds() {
+    return {
+      move: { x: 124, y: layout.h - 115, r: 62 },
+      fire: { x: layout.w - 116, y: layout.h - 112, r: 64 },
+      reload: { x: layout.w - 260, y: layout.h - 78, r: 39 },
+      grenade: { x: layout.w - 223, y: layout.h - 215, r: 39 },
+    };
+  }
+  function clearInput() { keys.clear(); touches.clear(); pointer = null; shooting = false; actions = {}; weaponPicker = false; }
   function start() {
     game = new Game({ mapId: selectedMap, seed: Date.now() >>> 0 });
     screen = 'game'; paused = false; help = false; resultSaved = false; lastTimestamp = null;
-    pointer = null; clearInput(); toast = '第一波来了，保持移动！'; toastUntil = clock + 3;
+    resize(size); toast = '移动带动瞄准，按住开火！'; toastUntil = clock + 3;
   }
-  function menu() { screen = 'menu'; game = null; paused = false; help = false; clearInput(); }
+  function menu() { screen = 'menu'; game = null; paused = false; help = false; resize(size); }
   function pause() { if (game && !['won', 'dead'].includes(game.status)) paused = true; clearInput(); lastTimestamp = null; }
   function resume() { clearInput(); lastTimestamp = null; }
   function togglePause() { if (game && !['won', 'dead'].includes(game.status)) { paused = !paused; help = false; clearInput(); lastTimestamp = null; } }
@@ -57,6 +72,31 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function button(x, y, w, h, label, callback, { fill = C.panel, color = C.ink, border = C.line, fontSize = 19, active = true } = {}) {
     rounded(x, y, w, h, 12, fill, border); text(label, x + w / 2, y + h / 2, fontSize, color, 650, 'center');
     if (active) buttons.push({ x, y, w, h, callback, label });
+  }
+  function skillButton(role, label, callback, { color = C.ink, value = '', disabled = false, progress = 0 } = {}) {
+    const { x, y, r } = controlBounds()[role];
+    const held = [...touches.values()].some(touch => touch.role === role);
+    ctx.save(); ctx.globalAlpha = disabled ? .55 : 1;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = held ? 'rgba(83,112,72,.92)' : 'rgba(16,30,37,.78)'; ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = role === 'fire' ? 3 : 2; ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    const cy = y - (role === 'fire' ? 6 : 7);
+    if (role === 'fire') {
+      ctx.beginPath(); ctx.arc(x, cy, 18, 0, Math.PI * 2); ctx.stroke();
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.beginPath(); ctx.moveTo(x + dx * 11, cy + dy * 11); ctx.lineTo(x + dx * 25, cy + dy * 25); ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(x, cy, 4, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+    } else if (role === 'reload') {
+      ctx.beginPath(); ctx.arc(x, cy, 13, -.7, Math.PI * 1.4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 9, cy - 15); ctx.lineTo(x + 18, cy - 12); ctx.lineTo(x + 11, cy - 5); ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.ellipse(x, cy + 3, 10, 13, -.3, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x - 5, cy - 9); ctx.lineTo(x + 2, cy - 15); ctx.lineTo(x + 12, cy - 10); ctx.stroke();
+    }
+    text(role === 'grenade' ? `${label} ${value}` : label, x, y + (role === 'fire' ? 31 : 20), role === 'fire' ? 18 : 13, color, 750, 'center');
+    if (progress > 0) { ctx.beginPath(); ctx.arc(x, y, r - 5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress); ctx.strokeStyle = C.lime; ctx.lineWidth = 4; ctx.stroke(); }
+    ctx.restore();
+    buttons.push({ x: x - r, y: y - r, w: r * 2, h: r * 2, cx: x, cy: y, r, role: role === 'fire' ? 'fire' : undefined, callback, label });
   }
   function line(x1, y1, x2, y2, color = C.line) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.stroke(); }
   function mapPreview(map, x, y, w, h) {
@@ -127,59 +167,66 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function bar(x, y, w, value, max, color) { rounded(x, y, w, 7, 3, '#34464a'); if (value > 0) rounded(x, y, Math.max(6, w * clamp(value / max, 0, 1)), 7, 3, color); }
   function drawHUD() {
-    const { w, h, compact } = layout, p = game.player;
-    drawLogo(30, compact ? 14 : 24, true);
-    const sx = compact ? 250 : 290, sy = compact ? 27 : 34;
-    text(`生命  ${Math.ceil(p.hp)}`, sx, sy, 15, C.ink, 650); bar(sx, sy + 16, compact ? 104 : 135, p.hp, 100, C.coral);
-    text(`盾牌  ${Math.ceil(p.shield)}`, sx + (compact ? 127 : 166), sy, 15, C.teal, 650); bar(sx + (compact ? 127 : 166), sy + 16, compact ? 104 : 135, p.shield, 100, C.teal);
-    text(`第 ${String(game.wave).padStart(2, '0')} / 10 波`, w - (compact ? 355 : 400), sy + 2, compact ? 18 : 21, C.lime, 750);
-    text(`${game.score} 分`, w - 175, sy + 2, 18, C.ink, 650, 'right');
-    button(w - 143, compact ? 20 : 27, 110, 38, 'Ⅱ  暂停', togglePause, { fontSize: 15 });
-    const bottom = h - (compact ? 74 : 112), margin = 33, weaponW = compact ? 96 : 132, weaponGap = compact ? 5 : 8;
-    weaponIds.forEach((id, i) => {
-      const owned = p.weapons[id], selected = p.currentWeapon === id, x = margin + i * (weaponW + weaponGap);
-      rounded(x, bottom, weaponW, compact ? 56 : 65, 10, selected ? '#314538' : C.panel, selected ? C.lime : C.line);
-      text(`${i + 1}  ${WEAPONS[id].label}`, x + 9, bottom + 17, compact ? 12 : 14, owned ? C.ink : '#637a80', 650);
-      let label = '等待补给';
-      if (owned) label = owned.reloadRemaining > 0 ? '换弹中…' : `${owned.clip} / ${id === 'pistol' ? '∞' : owned.reserve}`;
-      text(label, x + 11, bottom + (compact ? 39 : 45), 13, selected ? C.lime : owned ? C.muted : '#637a80', 600);
-      buttons.push({ x, y: bottom, w: weaponW, h: compact ? 56 : 65, callback: () => { if (owned) actions.weaponSlot = id; else { toast = '清关或拾取武器箱，可以解锁这把枪'; toastUntil = clock + 2; } }, label: WEAPONS[id].label });
-    });
-    const bx = w - (compact ? 309 : 381), bh = compact ? 56 : 65;
-    button(bx, bottom, compact ? 101 : 112, bh, 'R  换弹', () => { actions.reload = true; }, { fontSize: 15 });
-    button(bx + (compact ? 111 : 124), bottom, compact ? 165 : 224, bh, `G  手雷  ×${p.grenades}`, () => { actions.grenade = true; }, { fill: '#3b3930', border: '#70624b', color: '#efcc92', fontSize: compact ? 17 : 19 });
-    if (!compact) { text('WASD 移动    鼠标瞄准 / 左键射击    1–6 换枪    Q 轮换', 34, h - 24, 12, C.muted); text('盾牌自动抵挡伤害', w - 36, h - 24, 12, C.teal, 500, 'right'); }
+    const { w } = layout, p = game.player, ammo = p.weapons[p.currentWeapon];
+    rounded(24, 18, 290, 112, 16, 'rgba(16,30,37,.84)', 'rgba(244,241,229,.2)');
+    text(`生命 ${Math.ceil(p.hp)}`, 40, 34, 13, C.ink, 700); bar(40, 47, 115, p.hp, p.maxHp, C.coral);
+    text(`盾牌 ${Math.ceil(p.shield)}`, 179, 34, 13, C.teal, 700); bar(179, 47, 115, p.shield, p.maxShield, C.teal);
+    text(WEAPONS[p.currentWeapon].label, 40, 77, 20, C.ink, 800);
+    text(ammo.clip, 293, 74, 27, C.lime, 800, 'right');
+    text(`备用 ${p.currentWeapon === 'pistol' ? '∞' : ammo.reserve}`, 293, 96, 12, C.muted, 600, 'right');
+    text(weaponPicker ? '点击收起  ▴' : '点击换枪  ▾', 40, 112, 12, C.teal, 650);
+    buttons.push({ x: 24, y: 61, w: 290, h: 65, callback: () => { weaponPicker = !weaponPicker; }, label: '切换武器' });
+    if (weaponPicker) {
+      rounded(24, 142, 290, 186, 14, 'rgba(16,30,37,.94)', C.line);
+      text('武器库', 38, 162, 16, C.ink, 750);
+      button(242, 150, 59, 25, '收起', () => { weaponPicker = false; }, { fontSize: 12, border: C.panel });
+      const labels = ['手枪', '冲锋枪', '步枪', '机枪', '大狙', '霰弹枪'];
+      weaponIds.forEach((id, i) => {
+        const owned = p.weapons[id], selected = p.currentWeapon === id, x = 36 + i % 3 * 91, y = 182 + Math.floor(i / 3) * 70;
+        rounded(x, y, 82, 64, 9, selected ? '#445b38' : C.panel, selected ? C.lime : C.line);
+        text(labels[i], x + 41, y + 22, 19, owned ? C.ink : '#839397', 750, 'center');
+        text(owned ? `${owned.clip} / ${id === 'pistol' ? '∞' : owned.reserve}` : '未解锁', x + 41, y + 46, 13, selected ? C.lime : C.muted, 600, 'center');
+        buttons.push({ x, y, w: 82, h: 64, callback: () => { if (owned) { actions.weaponSlot = id; weaponPicker = false; } else { toast = '清关或拾取武器箱，解锁更多枪械'; toastUntil = clock + 2; } }, label: WEAPONS[id].label });
+      });
+    }
+    rounded(w / 2 - 110, 20, 220, 54, 13, 'rgba(16,30,37,.76)');
+    text(`第 ${game.wave} / 10 波`, w / 2, 39, 21, C.lime, 800, 'center');
+    text(`剩余 ${game.waveTotal - game.waveKills}   ·   ${game.score} 分`, w / 2, 61, 13, C.ink, 650, 'center');
+    button(w - (platform === 'wechat' ? 263 : 98), 24, 74, 39, 'Ⅱ 暂停', togglePause, { fill: 'rgba(16,30,37,.8)', fontSize: 14 });
+    skillButton('fire', '开火', () => {}, { color: C.lime, disabled: ammo.reloadRemaining > 0 });
+    skillButton('reload', '换弹', () => { actions.reload = true; }, { color: C.teal, progress: ammo.reloadRemaining > 0 ? 1 - ammo.reloadRemaining / WEAPONS[p.currentWeapon].reloadTime : 0 });
+    skillButton('grenade', '手雷', () => { actions.grenade = true; }, { color: '#f5cc92', value: p.grenades, disabled: p.grenades <= 0 });
   }
-  function drawStick(role, x, y) {
-    const touch = [...touches.values()].find(t => t.role === role), base = touch?.base || { x, y }, r = 46;
+  function drawStick() {
+    const { x, y, r } = controlBounds().move;
+    const touch = [...touches.values()].find(t => t.role === 'move'), base = touch?.base || { x, y };
     ctx.beginPath(); ctx.arc(base.x, base.y, r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(16,30,37,.34)'; ctx.fill(); ctx.strokeStyle = 'rgba(244,241,229,.38)'; ctx.lineWidth = 1.5; ctx.stroke();
     let dx = touch ? touch.x - base.x : 0, dy = touch ? touch.y - base.y : 0;
     const dist = Math.hypot(dx, dy); if (dist > r) { dx *= r / dist; dy *= r / dist; }
-    ctx.beginPath(); ctx.arc(base.x + dx, base.y + dy, 19, 0, Math.PI * 2); ctx.fillStyle = role === 'aim' ? 'rgba(199,237,131,.75)' : 'rgba(244,241,229,.65)'; ctx.fill();
-    if (!touch) text(role === 'move' ? '移动' : '瞄准 / 开火', base.x, base.y + 67, 13, C.ink, 650, 'center');
+    ctx.beginPath(); ctx.arc(base.x + dx, base.y + dy, 25, 0, Math.PI * 2); ctx.fillStyle = 'rgba(244,241,229,.8)'; ctx.fill();
+    if (!touch) text('移动 / 转向', base.x, base.y + r + 22, 14, C.ink, 650, 'center');
   }
   function drawGame() {
     const arena = arenaBounds();
-    rounded(arena.x - 7, arena.y - 7, arena.w + 14, arena.h + 14, 16, '#20353a', C.line);
-    ctx.save(); ctx.translate(arena.x, arena.y); ctx.scale(arena.scale, arena.scale); drawArena(ctx, game, { time: clock * 1000 }); ctx.restore();
+    drawArena(ctx, game, { time: clock * 1000, ...arena });
     drawHUD();
     const bosses = game.enemies.filter(enemy => enemy.type === 'tank' && enemy.hp > 0);
     const boss = bosses.find(enemy => enemy.rangedCharge > 0) || bosses[0];
     if (boss) {
-      const bw = layout.compact ? 270 : 340, bx = (layout.w - bw) / 2, by = arena.y + 14;
+      const bw = 330, bx = (layout.w - bw) / 2, by = 89;
       rounded(bx, by, bw, 45, 12, 'rgba(16,30,37,.88)', '#aa8fbb');
       text(boss.rangedCharge > 0 ? `BOSS ×${bosses.length} · 预警！侧移躲避` : `重甲 BOSS ×${bosses.length} · 留意远程预警`, layout.w / 2, by + 14, 13, boss.rangedCharge > 0 ? C.coral : '#d3b9ed', 750, 'center');
       bar(bx + 15, by + 30, bw - 30, bosses.reduce((sum, enemy) => sum + enemy.hp, 0), bosses.reduce((sum, enemy) => sum + enemy.maxHp, 0), '#cba3eb');
     }
-    if (platform === 'wechat' || touches.size || layout.compact) { drawStick('move', 109, layout.h - 173); drawStick('aim', layout.w - 109, layout.h - 173); }
+    if (platform === 'wechat' || touches.size || layout.compact) drawStick();
     if (pointer && !paused && !help && screen === 'game') {
       ctx.beginPath(); ctx.arc(pointer.x, pointer.y, 10, 0, Math.PI * 2); ctx.strokeStyle = C.lime; ctx.lineWidth = 1.5; ctx.stroke();
       line(pointer.x - 16, pointer.y, pointer.x - 7, pointer.y, C.lime); line(pointer.x + 7, pointer.y, pointer.x + 16, pointer.y, C.lime);
       line(pointer.x, pointer.y - 16, pointer.x, pointer.y - 7, C.lime); line(pointer.x, pointer.y + 7, pointer.x, pointer.y + 16, C.lime);
     }
     if (toastUntil > clock && !paused && !help && game.status === 'playing' && !boss) {
-      const tw = Math.min(490, toast.length * 16 + 44); rounded(layout.w / 2 - tw / 2, arena.y + 15, tw, 38, 19, 'rgba(16,30,37,.86)');
-      text(toast, layout.w / 2, arena.y + 34, 15, C.ink, 600, 'center');
+      const tw = Math.min(440, toast.length * 16 + 44); rounded(layout.w / 2 - tw / 2, layout.h - 52, tw, 34, 17, 'rgba(16,30,37,.86)');
+      text(toast, layout.w / 2, layout.h - 35, 14, C.ink, 600, 'center');
     }
     if (paused && !help) drawPause();
     if (['dead', 'won'].includes(game.status)) drawResult();
@@ -209,8 +256,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     rounded(x, y, boxW, boxH, 22, C.panel, C.line); text('突围指南', x + 30, y + 39, 29, C.ink, 750);
     const rows = [
       ['移动与射击', '电脑：WASD / 方向键移动，鼠标瞄准，左键射击'],
-      ['手机操作', '左摇杆移动；拖动右摇杆，瞄准并持续开火'],
-      ['武器管理', '1–6 换枪 / Q 轮换 / R 换弹，也可点击下方武器卡'],
+      ['手机操作', '移动带动瞄准；按住开火，也可拖动开火按钮微调方向'],
+      ['武器管理', '左上角换枪与查看弹药；右侧圆形按钮换弹、扔雷'],
       ['盾牌与手雷', '盾牌先吸收伤害；G 扔手雷，也可点击手雷按钮'],
       ['补给与闯关', '捡新枪解锁，重复枪补弹；每波清关都有补给'],
       ['最后的保障', '手枪备用弹药无限，但弹匣用完仍需换弹'],
@@ -228,28 +275,44 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function collectInput() {
     let moveX = Number(keys.has('d') || keys.has('ArrowRight')) - Number(keys.has('a') || keys.has('ArrowLeft'));
     let moveY = Number(keys.has('s') || keys.has('ArrowDown')) - Number(keys.has('w') || keys.has('ArrowUp'));
-    let target = pointer ? world(pointer) : { x: game.player.x + Math.cos(game.player.angle || 0) * 200, y: game.player.y + Math.sin(game.player.angle || 0) * 200 };
-    let fire = shooting;
+    let fire = shooting, aimedTouch = null;
     for (const touch of touches.values()) {
-      if (touch.role === 'ui') continue;
       const dx = touch.x - touch.base.x, dy = touch.y - touch.base.y, dist = Math.hypot(dx, dy);
-      if (touch.role === 'move') { moveX += clamp(dx / 46, -1, 1); moveY += clamp(dy / 46, -1, 1); }
-      else if (touch.role === 'aim' && dist > 8) { target = { x: game.player.x + dx / dist * 500, y: game.player.y + dy / dist * 500 }; fire = true; }
+      if (touch.role === 'move' && dist > 6) {
+        moveX += clamp(dx / controlBounds().move.r, -1, 1);
+        moveY += clamp(dy / controlBounds().move.r, -1, 1);
+      } else if (touch.role === 'fire') {
+        fire = true;
+        if (dist > 12) aimedTouch = { x: dx / dist, y: dy / dist };
+      }
     }
+    moveX = clamp(moveX, -1, 1); moveY = clamp(moveY, -1, 1);
+    const p = game.player, movementLength = Math.hypot(moveX, moveY);
+    let direction = { x: Math.cos(p.angle), y: Math.sin(p.angle) };
+    if (movementLength > 0) direction = { x: moveX / movementLength, y: moveY / movementLength };
+    let target = pointer ? world(pointer) : { x: p.x + direction.x * 500, y: p.y + direction.y * 500 };
+    if (aimedTouch) target = { x: p.x + aimedTouch.x * 500, y: p.y + aimedTouch.y * 500 };
     const input = { moveX, moveY, aimX: target.x, aimY: target.y, shoot: fire, ...actions };
     actions = {}; return input;
   }
+  function buttonAt(point) {
+    return [...buttons].reverse().find(b => b.r
+      ? Math.hypot(point.x - b.cx, point.y - b.cy) <= b.r
+      : point.x >= b.x && point.x <= b.x + b.w && point.y >= b.y && point.y <= b.y + b.h);
+  }
   function activate(point) {
-    const button = [...buttons].reverse().find(b => point.x >= b.x && point.x <= b.x + b.w && point.y >= b.y && point.y <= b.y + b.h);
+    const button = buttonAt(point);
     if (button) { button.callback(); return true; } return false;
   }
   function handlePointer(type, point) {
-    const p = logical(point); pointer = p;
+    const p = logical(point);
+    if (type === 'up' || type === 'cancel') { shooting = false; return; }
     if (type === 'down' && point.button === 0) {
+      if (buttonAt(p)?.role === 'fire' && game && !paused && !help && game.status === 'playing') { shooting = true; return; }
       if (activate(p)) return;
       if (game && !paused && !help && game.status === 'playing') shooting = true;
     }
-    if (type === 'up') shooting = false;
+    pointer = p;
   }
   function handleKey(type, key) {
     const k = key.length === 1 ? key.toLowerCase() : key;
@@ -268,10 +331,15 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       const p = logical(touch);
       if (type === 'end' || type === 'cancel') { touches.delete(touch.id); continue; }
       if (type === 'start') {
-        if (activate(p) || screen !== 'game' || paused || help || !game || ['dead', 'won'].includes(game.status)) continue;
-        const role = p.x < layout.w / 2 ? 'move' : 'aim';
-        if ([...touches.values()].some(t => t.role === role)) continue;
-        touches.set(touch.id, { ...p, base: { ...p }, role });
+        pointer = null;
+        const playing = screen === 'game' && !paused && !help && game && !['dead', 'won'].includes(game.status);
+        if (playing && buttonAt(p)?.role === 'fire') {
+          if (![...touches.values()].some(t => t.role === 'fire')) touches.set(touch.id, { ...p, base: { ...p }, role: 'fire' });
+          continue;
+        }
+        if (activate(p) || !playing || p.x >= layout.w / 2) continue;
+        if ([...touches.values()].some(t => t.role === 'move')) continue;
+        touches.set(touch.id, { ...p, base: { ...p }, role: 'move' });
       } else if (touches.has(touch.id)) Object.assign(touches.get(touch.id), p);
     }
   }
@@ -298,7 +366,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (help) drawHelp();
   }
   function getSnapshot() {
-    return { screen, paused, help, selectedMap, best, layout: { ...layout }, buttons: buttons.map(({ x, y, w, h, label }) => ({ x, y, w, h, label })), game: game ? { status: game.status, wave: game.wave, score: game.score, time: game.time, kills: game.kills, mapId: game.map.id, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
+    return { screen, paused, help, weaponPicker, selectedMap, best, layout: { ...layout }, controls: controlBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { status: game.status, wave: game.wave, score: game.score, time: game.time, kills: game.kills, mapId: game.map.id, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
   }
   resize({ width, height, pixelRatio });
   return { frame, resize, handleTouch, handleKey, handlePointer, pause, resume, getSnapshot };

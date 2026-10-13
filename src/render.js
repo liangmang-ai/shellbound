@@ -1,5 +1,5 @@
 // Original procedural artwork; no external game assets or copied map graphics.
-import { BOSS_ATTACK, segmentRect } from './game.js';
+import { BOSS_ATTACK, WEAPONS, segmentRect } from './game.js';
 
 const TAU = Math.PI * 2;
 const ink = '#243c48';
@@ -203,10 +203,35 @@ function rangedWarning(ctx, enemy, map, t) {
   ctx.restore();
 }
 
-export function drawArena(ctx, game, { time = 0 } = {}) {
+function reloadIndicator(ctx, player, map) {
+  const weapon = WEAPONS[player.currentWeapon], ammo = player.weapons?.[player.currentWeapon];
+  if (!weapon || !ammo || ammo.reloadRemaining <= 0) return;
+  const progress = Math.max(0, Math.min(1, 1 - ammo.reloadRemaining / weapon.reloadTime));
+  const x = Math.max(38, Math.min(num(map.width, 1280) - 38, num(player.x)));
+  const y = Math.max(17, num(player.y) - num(player.radius, 20) - 34);
+  ctx.save();
+  ctx.fillStyle = '#243c48ed'; roundRect(ctx, x - 36, y - 13, 72, 26, 13); ctx.fill();
+  ctx.strokeStyle = '#fff0cd75'; ctx.lineWidth = 1.5; ctx.stroke();
+  circle(ctx, x - 22, y, 8, null, '#90a39f', 2);
+  ctx.strokeStyle = '#f8df8e'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(x - 22, y, 8, -Math.PI / 2, -Math.PI / 2 + TAU * progress); ctx.stroke();
+  ctx.fillStyle = '#fff1ca'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = 'bold 12px sans-serif'; ctx.fillText('换弹', x + 9, y);
+  ctx.restore();
+}
+
+// Optional screen bounds supply a camera measured in world coordinates. Callers
+// without a camera keep the original world-space rendering behavior.
+export function drawArena(ctx, game, bounds = {}) {
+  const { time = 0, camera } = bounds;
   const map = game.map || {}, w = num(map.width, 1280), h = num(map.height, 760), t = num(time) * .001;
   const palette = themes[map.id] || themes[map.theme] || themes.courtyard;
   ctx.save();
+  if (camera) {
+    const scale = Math.max(.001, num(bounds.scale, 1)), x = num(bounds.x), y = num(bounds.y);
+    ctx.beginPath(); ctx.rect(x, y, Math.max(1, num(bounds.w, w * scale)), Math.max(1, num(bounds.h, h * scale))); ctx.clip();
+    ctx.translate(x, y); ctx.scale(scale, scale); ctx.translate(-num(camera.x), -num(camera.y));
+  }
   ctx.fillStyle = palette.edge; roundRect(ctx, -10, -10, w + 20, h + 24, 26); ctx.fill();
   ctx.fillStyle = palette.floor; roundRect(ctx, 0, 0, w, h, 20); ctx.fill();
   ctx.save(); roundRect(ctx, 0, 0, w, h, 20); ctx.clip();
@@ -273,5 +298,6 @@ export function drawArena(ctx, game, { time = 0 } = {}) {
     ctx.strokeStyle = '#fff0bd'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(num(g.x), num(g.y), 14, -Math.PI / 2, -Math.PI / 2 + TAU * ratio); ctx.stroke();
   }
   for (const e of game.effects || []) effect(ctx, e);
+  if (player) reloadIndicator(ctx, player, map);
   ctx.restore(); ctx.restore();
 }

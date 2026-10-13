@@ -21,14 +21,38 @@ try {
   await page.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.__shellbound?.getSnapshot().buttons.length > 0);
   const snapshot = () => page.evaluate(() => window.__shellbound.getSnapshot());
-  const checkWeaponBar = state => {
-    const gunLabels = ['啵啵手枪', '跳豆冲锋枪', '薄荷步枪', '爆米花机枪', '星光大狙', '脆壳霰弹枪'];
-    const cards = gunLabels.map(label => state.buttons.find(button => button.label.includes(label)));
-    assert.ok(cards.every(Boolean), 'All six weapon cards must be available');
-    const reload = state.buttons.find(button => button.label.includes('换弹'));
-    for (let i = 0; i < cards.length; i++) {
-      const next = cards[i + 1] || reload;
-      assert.ok(cards[i].x + cards[i].w <= next.x, 'Weapon cards must not overlap each other or reload');
+  const gunLabels = ['啵啵手枪', '跳豆冲锋枪', '薄荷步枪', '爆米花机枪', '星光大狙', '脆壳霰弹枪'];
+  const checkCombatLayout = state => {
+    const picker = state.buttons.find(button => button.label === '切换武器');
+    assert.ok(picker, 'The compact weapon HUD has one large picker entry');
+    assert.ok(picker.w * state.layout.scale >= 44 && picker.h * state.layout.scale >= 44, 'Weapon picker has a usable touch area');
+    assert.equal(state.weaponPicker, false, 'Weapon choices stay collapsed during combat');
+    const pause = state.buttons.find(button => button.label.includes('暂停'));
+    assert.ok(picker.x + picker.w <= state.layout.w / 2 - 110 && state.layout.w / 2 + 110 <= pause.x,
+      'Weapon stats, central wave HUD, and pause remain separated across landscape aspect ratios');
+    const circles = ['move', 'fire', 'reload', 'grenade'].map(role => ({ role, ...state.controls[role] }));
+    for (const circle of circles) {
+      assert.ok(circle.x - circle.r >= 0 && circle.y - circle.r >= 0 && circle.x + circle.r <= state.layout.w && circle.y + circle.r <= state.layout.h,
+        `${circle.role} must remain inside combat bounds`);
+      assert.ok(circle.r * 2 * state.layout.scale >= 44, `${circle.role} needs a usable touch diameter`);
+    }
+    for (let i = 0; i < circles.length; i++) for (let j = i + 1; j < circles.length; j++) {
+      assert.ok(Math.hypot(circles[i].x - circles[j].x, circles[i].y - circles[j].y) >= circles[i].r + circles[j].r,
+        'Circular combat controls must not overlap');
+    }
+  };
+  const checkWeaponPicker = state => {
+    assert.equal(state.weaponPicker, true);
+    const cards = gunLabels.map(label => state.buttons.find(button => button.label === label));
+    assert.ok(cards.every(Boolean), 'Opening the picker offers all six weapon choices');
+    for (const card of cards) {
+      assert.ok(card.w * state.layout.scale >= 44 && card.h * state.layout.scale >= 44, 'Each weapon choice has a usable touch area');
+      assert.ok(card.x >= 0 && card.y >= 0 && card.x + card.w <= state.layout.w && card.y + card.h <= state.layout.h, 'Weapon choices remain on screen');
+      assert.ok(card.y + card.h <= 330, 'Weapon choices remain grouped above the movement control');
+    }
+    for (let i = 0; i < cards.length; i++) for (let j = i + 1; j < cards.length; j++) {
+      const a = cards[i], b = cards[j];
+      assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, 'Weapon choices must not overlap');
     }
   };
   const clickLabel = async (label) => {
@@ -47,7 +71,11 @@ try {
   await clickLabel('落日温室'); assert.equal((await snapshot()).selectedMap, 'greenhouse');
   await clickLabel('开始突围');
   let state = await snapshot(); assert.equal(state.screen, 'game'); assert.equal(state.game.mapId, 'greenhouse');
-  checkWeaponBar(state);
+  checkCombatLayout(state);
+  await clickLabel('切换武器');
+  checkWeaponPicker(await snapshot());
+  await clickLabel('收起');
+  checkCombatLayout(await snapshot());
   const initialX = state.game.player.x;
   await page.keyboard.down('d'); await page.waitForFunction(x => window.__shellbound.getSnapshot().game.player.x > x + 30, initialX); await page.keyboard.up('d');
   state = await snapshot(); assert.ok(state.game.player.x > initialX + 20, `Keyboard movement must move player: ${JSON.stringify({initialX,game:state.game,paused:state.paused,help:state.help})}`);
@@ -67,37 +95,88 @@ try {
   state = await snapshot(); assert.equal(state.game.wave, 1); assert.equal(state.game.player.grenades, 3); assert.equal(state.game.player.shield, 35);
   await page.keyboard.press('Escape'); await clickLabel('返回战区'); assert.equal((await snapshot()).screen, 'menu');
 
-  const mobile = await browser.newPage({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
-  mobile.on('pageerror', error => errors.push(error.message));
-  await mobile.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
-  await mobile.waitForFunction(() => window.__shellbound?.getSnapshot().buttons.length > 0);
-  const canvasRect = await mobile.locator('canvas').boundingBox();
-  assert.ok(canvasRect.height <= 390 && canvasRect.width <= 844, 'Mobile canvas must fit the visible viewport');
-  const mobileState = await mobile.evaluate(() => window.__shellbound.getSnapshot());
-  await mobile.screenshot({ path: 'artifacts/mobile-menu.png' });
-  const start = mobileState.buttons.find(button => button.label.includes('开始突围'));
-  const { ox, oy, scale } = mobileState.layout;
-  await mobile.touchscreen.tap(ox + (start.x + start.w / 2) * scale, oy + (start.y + start.h / 2) * scale);
-  const mobileX = (await mobile.evaluate(() => window.__shellbound.getSnapshot())).game.player.x;
-  const cdp = await mobile.context().newCDPSession(mobile);
-  const t = (x, y, id) => ({ x: ox + x * scale, y: oy + y * scale, id });
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [t(109, 367, 1), t(851, 367, 2)] });
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [t(151, 367, 1), t(816, 350, 2)] });
-  await mobile.waitForTimeout(450);
-  let ms = await mobile.evaluate(() => window.__shellbound.getSnapshot());
-  checkWeaponBar(ms);
-  assert.ok(ms.game.player.x > mobileX + 25, 'Left touch stick must move player');
-  assert.ok(ms.game.player.weapons.pistol.clip < 12, 'Right touch stick must fire');
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await mobile.screenshot({ path: 'artifacts/mobile.png' });
-  ms = await mobile.evaluate(() => window.__shellbound.getSnapshot());
-  assert.ok(ms.buttons.every(button => ms.layout.oy + (button.y + button.h) * ms.layout.scale <= 390), 'Every touch button must remain on screen');
-  await mobile.setViewportSize({ width: 390, height: 844 });
-  const portraitTime = (await mobile.evaluate(() => window.__shellbound.getSnapshot())).game.time;
-  await mobile.waitForTimeout(180); assert.equal((await mobile.evaluate(() => window.__shellbound.getSnapshot())).game.time, portraitTime, 'Portrait rotation must freeze game');
+  for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [900, 675]]) {
+    const mobile = await browser.newPage({ viewport: { width, height }, hasTouch: true, isMobile: true });
+    mobile.on('pageerror', error => errors.push(error.message));
+    await mobile.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
+    await mobile.waitForFunction(() => window.__shellbound?.getSnapshot().buttons.length > 0);
+    const mobileSnapshot = () => mobile.evaluate(() => window.__shellbound.getSnapshot());
+    const canvasRect = await mobile.locator('canvas').boundingBox();
+    assert.ok(canvasRect.height <= height && canvasRect.width <= width, 'Mobile canvas must fit the visible viewport');
+    const menuState = await mobileSnapshot();
+    if (width === 844) await mobile.screenshot({ path: 'artifacts/mobile-menu.png' });
+    const start = menuState.buttons.find(button => button.label.includes('开始突围'));
+    await mobile.touchscreen.tap(menuState.layout.ox + (start.x + start.w / 2) * menuState.layout.scale,
+      menuState.layout.oy + (start.y + start.h / 2) * menuState.layout.scale);
+    await mobile.waitForFunction(() => {
+      const state = window.__shellbound.getSnapshot();
+      return state.screen === 'game' && state.buttons.some(button => button.label === '开火');
+    });
+    let ms = await mobileSnapshot();
+    checkCombatLayout(ms);
+    const tapMobileLabel = async label => {
+      const state = await mobileSnapshot();
+      const button = state.buttons.find(item => item.label === label);
+      assert.ok(button, `Missing mobile button ${label}`);
+      await mobile.touchscreen.tap(state.layout.ox + (button.x + button.w / 2) * state.layout.scale,
+        state.layout.oy + (button.y + button.h / 2) * state.layout.scale);
+      await mobile.waitForTimeout(80);
+    };
+    await tapMobileLabel('切换武器');
+    checkWeaponPicker(await mobileSnapshot());
+    await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-weapons.png` });
+    await tapMobileLabel('收起');
+    ms = await mobileSnapshot();
+    checkCombatLayout(ms);
+    assert.ok(Math.abs(ms.layout.ox) < 1 && Math.abs(ms.layout.oy) < 1, 'Mobile combat has no letterboxing');
+    assert.ok(Math.abs(ms.arena.w * ms.layout.scale - width) < 1 && Math.abs(ms.arena.h * ms.layout.scale - height) < 1,
+      'Mobile arena fills the entire screen');
+    const { move, fire, reload, grenade } = ms.controls;
+    const mobileX = ms.game.player.x;
+    const { ox, oy, scale } = ms.layout;
+    const cdp = await mobile.context().newCDPSession(mobile);
+    const t = (x, y, id) => ({ x: ox + x * scale, y: oy + y * scale, id });
+    const moved = t(move.x + move.r * .8, move.y, 1), heldFire = t(fire.x, fire.y, 2);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [t(move.x, move.y, 1), heldFire] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [moved, heldFire] });
+    await mobile.waitForTimeout(450);
+    ms = await mobileSnapshot();
+    assert.ok(ms.game.player.x > mobileX + 25, 'Left touch stick must move player');
+    assert.ok(Math.abs(ms.game.player.angle) < .05, 'Movement right aims right while holding fire');
+    assert.ok(ms.game.player.weapons.pistol.clip < 12, 'A stationary held fire button must shoot');
+    const grenades = ms.game.player.grenades;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [moved, heldFire, t(grenade.x, grenade.y, 3)] });
+    await mobile.waitForTimeout(100);
+    assert.equal((await mobileSnapshot()).game.player.grenades, grenades - 1, 'A third touch throws a grenade while moving and firing');
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    const ammoAfterRelease = (await mobileSnapshot()).game.player.weapons.pistol.clip;
+    await mobile.waitForTimeout(300);
+    assert.equal((await mobileSnapshot()).game.player.weapons.pistol.clip, ammoAfterRelease, 'Releasing all touches stops fire');
+    await mobile.touchscreen.tap(ox + reload.x * scale, oy + reload.y * scale);
+    await mobile.waitForTimeout(100);
+    ms = await mobileSnapshot();
+    assert.ok(ms.game.player.weapons.pistol.reloadRemaining > 0, 'Circular reload touch starts reloading');
+    await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-reload.png` });
+    await mobile.waitForTimeout(900);
+    assert.equal((await mobileSnapshot()).game.player.weapons.pistol.clip, 12, 'Reload completes after tapping its circle');
+    await mobile.screenshot({ path: width === 844 ? 'artifacts/mobile.png' : `artifacts/mobile-${width}x${height}.png` });
+    ms = await mobileSnapshot();
+    assert.ok(ms.buttons.every(button => ms.layout.oy + (button.y + button.h) * ms.layout.scale <= height
+      && ms.layout.ox + (button.x + button.w) * ms.layout.scale <= width), 'Every touch button must remain on screen');
+    await mobile.setViewportSize({ width: height, height: width });
+    await mobile.waitForTimeout(80);
+    const portraitTime = (await mobileSnapshot()).game.time;
+    await mobile.waitForTimeout(180);
+    assert.equal((await mobileSnapshot()).game.time, portraitTime, 'Portrait rotation must freeze game');
+    await mobile.setViewportSize({ width, height });
+    await mobile.waitForTimeout(100);
+    const returned = await mobileSnapshot();
+    assert.equal(returned.game.player.weapons.pistol.clip, 12, 'Rotation does not leave fire held');
+    await mobile.close();
+  }
   assert.deepEqual(errors, [], 'Browser must not raise runtime errors');
-  console.log('浏览器检查通过：地图选择、六把武器布局、键鼠射击、换弹、手雷、暂停/重开、双摇杆触控、横竖屏。');
-  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/mobile.png');
+  console.log('浏览器检查通过：地图选择、武器面板展开/收起、键鼠射击、圆形换弹/手雷、暂停/重开、移动朝向+持续开火、三种手机/两种平板横屏尺寸、横竖屏。');
+  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/mobile.png、artifacts/mobile-*-reload.png、artifacts/mobile-*-weapons.png');
 } finally {
   await browser?.close();
   server.kill();
