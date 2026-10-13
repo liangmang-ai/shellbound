@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { copyFile, mkdir, rm } from 'node:fs/promises';
+import { copyFile, cp, mkdir, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +40,8 @@ await Promise.all([
   copyFile(resolve(root, 'web/index.html'), resolve(webOutput, 'index.html')),
   copyFile(resolve(root, 'wechat/game.json'), resolve(wechatOutput, 'game.json')),
   copyFile(resolve(root, 'wechat/project.config.json'), resolve(wechatOutput, 'project.config.json')),
+  cp(resolve(root, 'assets/audio'), resolve(webOutput, 'assets/audio'), { recursive: true }),
+  cp(resolve(root, 'assets/audio'), resolve(wechatOutput, 'assets/audio'), { recursive: true }),
 ]);
 
 console.log('构建完成：dist/web、dist/wechat');

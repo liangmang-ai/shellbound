@@ -1,4 +1,5 @@
 import { createApp } from '../src/app.js';
+import { createAudio } from '../src/audio.js';
 
 const canvas = wx.createCanvas();
 const getSize = () => {
@@ -26,7 +27,8 @@ const storage = {
     }
   },
 };
-const app = createApp({ canvas, ...getSize(), storage, platform: 'wechat' });
+const audio = createAudio({ platform: 'wechat', wxApi: wx });
+const app = createApp({ canvas, ...getSize(), storage, platform: 'wechat', audio });
 const convertTouches = (event) => (event.changedTouches || event.touches || []).map((touch) => ({
   id: touch.identifier,
   x: touch.clientX ?? touch.pageX,
@@ -69,6 +71,7 @@ wx.onHide(() => {
   if (frameId !== null) cancelFrame(frameId);
   frameId = null;
 });
+if (typeof wx.onAudioInterruptionBegin === 'function') wx.onAudioInterruptionBegin(() => app.pause());
 wx.onShow(() => {
   active = true;
   app.resize(getSize());

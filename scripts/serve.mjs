@@ -19,6 +19,7 @@ const mimeTypes = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.webp': 'image/webp',
+  '.wav': 'audio/wav',
 };
 
 const server = createServer(async (request, response) => {

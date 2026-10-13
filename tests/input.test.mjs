@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createApp } from '../src/app.js';
 import { Game } from '../src/game.js';
 
-function harness(t, platform = 'wechat') {
+function harness(t, platform = 'wechat', options = {}) {
   const context = new Proxy({
     measureText: value => ({ width: String(value).length * 8 }),
     createRadialGradient: () => ({ addColorStop() {} }),
@@ -16,7 +16,7 @@ function harness(t, platform = 'wechat') {
     return update.apply(this, args);
   };
   t.after(() => { Game.prototype.update = update; });
-  const app = createApp({ canvas: { getContext: () => context }, width: 844, height: 390, platform });
+  const app = createApp({ canvas: { getContext: () => context }, width: 844, height: 390, platform, ...options });
   let timestamp = 0;
   function step(ms = 16) { timestamp += ms; app.frame(timestamp); }
   function point(x, y, extra = {}) {
@@ -165,4 +165,63 @@ test('pause and resize clear held fire and movement touches', t => {
   h.app.resize({ width: 812, height: 375 });
   for (let i = 0; i < 20; i++) h.step();
   assert.equal(h.game.player.weapons.pistol.clip, clip);
+});
+
+test('held touch fire assists forward without accumulating assisted facing; dragging overrides', t => {
+  const h = harness(t), { move, fire } = h.app.getSnapshot().controls;
+  h.game.enemies.push({ id: 900, type: 'grunt', radius: 17, hp: 1000, maxHp: 1000, x: 830, y: 430, speed: 0, damage: 12, hitFlash: 0 });
+  h.touch('start', 1, move.x, move.y);
+  h.touch('move', 1, move.x + 50, move.y);
+  h.touch('start', 2, fire.x, fire.y);
+  for (let i = 0; i < 5; i++) h.step();
+  assert.equal(h.app.getSnapshot().aim.targetId, 900);
+  assert.ok(h.game.player.angle > .2 && h.game.player.angle < .4);
+  near(h.app.getSnapshot().aim.facing, 0);
+  h.touch('move', 2, fire.x + 14, fire.y);
+  h.step();
+  assert.equal(h.app.getSnapshot().aim.targetId, 900, 'a small thumb wobble keeps assistance active');
+  h.touch('move', 2, fire.x, fire.y - 40);
+  h.step();
+  assert.equal(h.app.getSnapshot().aim.targetId, null);
+  near(h.game.player.angle, -Math.PI / 2);
+  h.touch('end', 2, fire.x, fire.y - 40);
+  h.step(); near(h.game.player.angle, 0);
+});
+
+test('assist can be disabled and settings persist while combat remains frozen', t => {
+  const saves = new Map();
+  const h = harness(t, 'wechat', { storage: { getItem: key => saves.get(key), setItem: (key, value) => saves.set(key, value) } });
+  h.app.pause(); h.step();
+  const before = h.game.time;
+  h.tap('辅助瞄准：开'); h.step();
+  h.tap('音效：开'); h.step();
+  assert.equal(h.game.time, before);
+  assert.deepEqual(h.app.getSnapshot().settings, { aimAssist: false, muted: true });
+  assert.deepEqual(JSON.parse(saves.get('shellbound.settings.v1')), { muted: true, aimAssist: false });
+  h.tap('继续突围'); h.step();
+  const { move, fire } = h.app.getSnapshot().controls;
+  h.game.enemies.push({ id: 901, type: 'grunt', radius: 17, hp: 1000, maxHp: 1000, x: 830, y: 430, speed: 0, damage: 12, hitFlash: 0 });
+  h.touch('start', 1, move.x, move.y); h.touch('move', 1, move.x + 50, move.y);
+  h.touch('start', 2, fire.x, fire.y); h.step();
+  assert.equal(h.app.getSnapshot().aim.targetId, null);
+  near(h.game.player.angle, 0);
+});
+
+test('audio unlocks on gestures, receives real shot events and stops for pause/menu', t => {
+  const calls = [];
+  const h = harness(t, 'wechat', { audio: {
+    unlock: () => calls.push('unlock'), pause: () => calls.push('pause'), setMuted: value => calls.push(`muted:${value}`),
+    playEvents: events => calls.push(...events.map(event => event.type)), getSnapshot: () => ({ ready: true }),
+  } });
+  assert.ok(calls.includes('wave'));
+  h.tap('开火'); // A tap ending before a frame deliberately does not shoot.
+  const fire = h.button('开火');
+  h.touch('start', 2, fire.cx, fire.cy); h.step();
+  assert.ok(calls.includes('shot'));
+  assert.ok(calls.includes('unlock'));
+  h.app.pause(); h.step();
+  assert.equal(calls.at(-1), 'pause');
+  h.tap('返回战区'); h.step();
+  assert.equal(h.app.getSnapshot().screen, 'menu');
+  assert.equal(calls.at(-1), 'pause');
 });

@@ -68,9 +68,12 @@ try {
   await page.screenshot({ path: 'artifacts/menu.png' });
   await clickLabel('操作指南'); assert.equal((await snapshot()).help, true);
   await clickLabel('准备好了');
-  await clickLabel('落日温室'); assert.equal((await snapshot()).selectedMap, 'greenhouse');
+  await clickLabel('汽泡工坊'); assert.equal((await snapshot()).selectedMap, 'greenhouse');
   await clickLabel('开始突围');
   let state = await snapshot(); assert.equal(state.screen, 'game'); assert.equal(state.game.mapId, 'greenhouse');
+  assert.equal(state.game.environment.barrels.length, 4);
+  assert.equal(state.game.environment.speedZones.length, 2);
+  assert.equal(state.settings.aimAssist, true);
   checkCombatLayout(state);
   await clickLabel('切换武器');
   checkWeaponPicker(await snapshot());
@@ -81,11 +84,18 @@ try {
   state = await snapshot(); assert.ok(state.game.player.x > initialX + 20, `Keyboard movement must move player: ${JSON.stringify({initialX,game:state.game,paused:state.paused,help:state.help})}`);
   await page.mouse.move(920, 400); await page.mouse.down(); await page.waitForTimeout(400); await page.mouse.up();
   state = await snapshot(); assert.ok(state.game.player.weapons.pistol.clip < 12, 'Firing must consume a clip');
+  assert.equal(state.audio.supported, true);
+  assert.ok(state.audio.played > 0, 'Chrome starts actual Web Audio voices after a gesture');
+  assert.equal(state.audio.failures, 0);
   const grenadeCount = state.game.player.grenades;
   await page.keyboard.press('g'); await page.waitForTimeout(100);
   state = await snapshot(); assert.equal(state.game.player.grenades, grenadeCount - 1); assert.ok(state.game.grenadeCount > 0);
   await page.keyboard.press('r'); await page.waitForTimeout(100); assert.ok((await snapshot()).game.player.weapons.pistol.reloadRemaining > 0);
   await page.keyboard.press('Escape'); state = await snapshot(); assert.equal(state.paused, true);
+  assert.equal(state.audio.activeVoices, 0, 'Pause stops all audible combat voices');
+  await clickLabel('音效：开');
+  assert.equal((await snapshot()).settings.muted, true);
+  await clickLabel('音效：关');
   const frozenTime = state.game.time;
   await page.waitForTimeout(300); assert.equal((await snapshot()).game.time, frozenTime, 'Pause must stop simulation');
   await clickLabel('继续突围'); await page.waitForTimeout(1100);
@@ -93,6 +103,21 @@ try {
   await page.screenshot({ path: 'artifacts/arena.png' });
   await page.keyboard.press('Escape'); await clickLabel('重新开始');
   state = await snapshot(); assert.equal(state.game.wave, 1); assert.equal(state.game.player.grenades, 3); assert.equal(state.game.player.shield, 35);
+  const barrel = state.game.environment.barrels[1], { arena, layout } = state;
+  const barrelScreen = { x: layout.ox + (barrel.x - arena.camera.x) * arena.scale * layout.scale,
+    y: layout.oy + (barrel.y - arena.camera.y) * arena.scale * layout.scale };
+  await page.mouse.move(barrelScreen.x, barrelScreen.y);
+  await page.mouse.down();
+  await page.waitForFunction(() => window.__shellbound.getSnapshot().game.environment.barrels.filter(barrel => !barrel.active).length >= 2);
+  await page.mouse.up();
+  state = await snapshot();
+  assert.ok(state.game.environment.barrels[0].respawnRemaining > 0);
+  await page.screenshot({ path: 'artifacts/workshop-barrels.png' });
+  await page.keyboard.down('w');
+  await page.waitForFunction(() => window.__shellbound.getSnapshot().game.environment.speedMultiplier > 1);
+  await page.keyboard.up('w');
+  assert.equal((await snapshot()).game.environment.speedMultiplier, 1.45);
+  await page.screenshot({ path: 'artifacts/workshop-speed.png' });
   await page.keyboard.press('Escape'); await clickLabel('返回战区'); assert.equal((await snapshot()).screen, 'menu');
 
   for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [900, 675]]) {

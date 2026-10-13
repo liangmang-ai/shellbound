@@ -1,6 +1,7 @@
 // Original, platform-independent game simulation. All coordinates are world pixels.
 export const MAX_WAVES = 10;
 export const BOSS_ATTACK = Object.freeze({ interval: 4, windup: 0.85, bulletSpeed: 310, damage: 18, radius: 7, life: 5, spread: 0.18 });
+export const BARREL_RULES = Object.freeze({ hp: 44, radius: 19, blastRadius: 145, damage: 155, respawnSeconds: 12 });
 export const WEAPON_ORDER = ['pistol', 'smg', 'rifle', 'lmg', 'sniper', 'shotgun'];
 export const WEAPONS = Object.freeze({
   pistol: { label: '啵啵手枪', clipSize: 12, reserveMax: Infinity, damage: 22, fireInterval: 0.24, reloadTime: 0.85, bulletSpeed: 950, spread: 0.025, piercing: 1, color: '#ffe5ad' },
@@ -23,14 +24,21 @@ export const MAPS = [
     spawnPoints: [{ x: 55, y: 95 }, { x: 1225, y: 95 }, { x: 55, y: 665 }, { x: 1225, y: 665 }, { x: 640, y: 45 }, { x: 640, y: 715 }],
   },
   {
-    id: 'greenhouse', name: '落日温室', theme: 'peach', width: 1280, height: 760,
+    id: 'greenhouse', name: '汽泡工坊', theme: 'factory', width: 1280, height: 760,
     start: { x: 640, y: 380 },
     obstacles: [
-      { x: 200, y: 200, w: 240, h: 80 }, { x: 200, y: 440, w: 240, h: 80 },
-      { x: 840, y: 200, w: 240, h: 80 }, { x: 840, y: 440, w: 240, h: 80 },
-      { x: 600, y: 80, w: 80, h: 200 }, { x: 600, y: 480, w: 80, h: 200 },
+      { x: 320, y: 190, w: 100, h: 230 }, { x: 840, y: 370, w: 180, h: 100 },
+      { x: 670, y: 125, w: 220, h: 80 }, { x: 160, y: 575, w: 230, h: 80 },
     ],
     spawnPoints: [{ x: 55, y: 380 }, { x: 1225, y: 380 }, { x: 300, y: 45 }, { x: 980, y: 45 }, { x: 300, y: 715 }, { x: 980, y: 715 }],
+    speedZones: [
+      { id: 'conveyor-west', x: 475, y: 280, w: 330, h: 70, multiplier: 1.45 },
+      { id: 'conveyor-east', x: 1060, y: 310, w: 85, h: 270, multiplier: 1.45 },
+    ],
+    barrelStations: [
+      { id: 'west-a', x: 520, y: 200 }, { id: 'west-b', x: 625, y: 240 },
+      { id: 'south', x: 760, y: 555 }, { id: 'east', x: 1050, y: 230 },
+    ],
   },
 ];
 
@@ -149,8 +157,14 @@ export class Game {
       ...this.map.start, radius: 18, angle: -Math.PI / 2, hp: 100, maxHp: 100,
       shield: 35, maxShield: 100, grenades: 3, maxGrenades: 8, speed: 225,
       currentWeapon: 'pistol', weapons: { pistol: this.makeAmmo('pistol') },
-      invulnerability: 0,
+      invulnerability: 0, speedMultiplier: 1, speedZoneId: null,
     };
+    // Fixed stations respawn independently; barrels never block navigation or add wave enemies.
+    this.barrels = (this.map.barrelStations || []).map(station => ({
+      id: this.nextId++, stationId: station.id, x: station.x, y: station.y,
+      radius: BARREL_RULES.radius, hp: BARREL_RULES.hp, maxHp: BARREL_RULES.hp,
+      active: true, respawnRemaining: 0,
+    }));
     this.enemies = [];
     this.bullets = [];
     this.grenades = [];
@@ -230,6 +244,7 @@ export class Game {
     if (dt <= 0 || this.status === 'dead' || this.status === 'won') return;
     this.time += dt;
     const p = this.player;
+    this.updateMap(dt);
     p.invulnerability = Math.max(0, p.invulnerability - dt);
     for (const [id, ammo] of Object.entries(p.weapons)) {
       ammo.cooldown = Math.max(-dt, ammo.cooldown - dt);
@@ -246,7 +261,7 @@ export class Game {
     let mx = clamp(finite(input.moveX), -1, 1), my = clamp(finite(input.moveY), -1, 1);
     const movementLength = Math.hypot(mx, my);
     if (movementLength > 1) { mx /= movementLength; my /= movementLength; }
-    this.moveBody(p, mx * p.speed * dt, my * p.speed * dt);
+    this.movePlayer(mx, my, dt);
     if (Number.isFinite(input.aimX) && Number.isFinite(input.aimY)) {
       const dx = input.aimX - p.x, dy = input.aimY - p.y;
       if (Math.hypot(dx, dy) > 0.5) p.angle = Math.atan2(dy, dx);
@@ -309,7 +324,10 @@ export class Game {
           damage: def.damage, remainingHits: def.piercing, hitIds: new Set(),
           owner: 'player', weapon: id, distanceTravelled: 0, maxRange: def.range,
           life: def.range ? def.range / def.bulletSpeed : id === 'sniper' ? 1.1 : 0.95 });
-        if (pellet === 0) this.events.push({ type: 'shot', weaponId: id, x, y });
+        if (pellet === 0) {
+          this.events.push({ type: 'shot', weaponId: id, x, y });
+          this.addEffect('muzzle', x, y, 12, 0.075, def.color, { angle: p.angle, weaponId: id });
+        }
       }
     }
     if (ammo.clip === 0) this.tryReload();
@@ -343,6 +361,53 @@ export class Game {
       const nearX = clamp(x, rect.x, rect.x + rect.w), nearY = clamp(y, rect.y, rect.y + rect.h);
       return (x - nearX) ** 2 + (y - nearY) ** 2 < radius ** 2;
     });
+  }
+
+  syncSpeedZone() {
+    const p = this.player;
+    const zone = (this.map.speedZones || []).find(area => p.x >= area.x && p.x < area.x + area.w
+      && p.y >= area.y && p.y < area.y + area.h);
+    const zoneId = zone?.id || null;
+    p.speedMultiplier = zone?.multiplier || 1;
+    if (p.speedZoneId !== zoneId) {
+      p.speedZoneId = zoneId;
+      this.events.push({ type: 'speedBoost', active: Boolean(zone), zoneId, multiplier: p.speedMultiplier });
+    }
+  }
+
+  movePlayer(mx, my, dt) {
+    const p = this.player;
+    const maxBoost = Math.max(1, ...(this.map.speedZones || []).map(zone => zone.multiplier));
+    // Small movement steps recheck zone edges and keep acceleration from leaking into open ground.
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(mx), Math.abs(my)) * p.speed * maxBoost * dt / 6));
+    for (let i = 0; i < steps; i++) {
+      this.syncSpeedZone();
+      this.moveBody(p, mx * p.speed * p.speedMultiplier * dt / steps, my * p.speed * p.speedMultiplier * dt / steps);
+    }
+    this.syncSpeedZone();
+  }
+
+  updateMap(dt) {
+    for (const barrel of this.barrels) if (!barrel.active) {
+      barrel.respawnRemaining = Math.max(0, barrel.respawnRemaining - dt);
+      if (barrel.respawnRemaining <= 1e-7) {
+        barrel.active = true;
+        barrel.hp = barrel.maxHp;
+        barrel.respawnRemaining = 0;
+        this.addEffect('barrelRespawn', barrel.x, barrel.y, 30, 0.55, '#71e8e0');
+        this.events.push({ type: 'barrelRespawn', barrelId: barrel.id, x: barrel.x, y: barrel.y });
+      }
+    }
+  }
+
+  environmentSnapshot() {
+    return {
+      barrels: this.barrels.map(({ id, stationId, x, y, radius, hp, maxHp, active, respawnRemaining }) =>
+        ({ id, stationId, x, y, radius, hp, maxHp, active, respawnRemaining })),
+      speedZones: (this.map.speedZones || []).map(zone => ({ ...zone })),
+      speedMultiplier: this.player.speedMultiplier,
+      speedZoneId: this.player.speedZoneId,
+    };
   }
 
   moveBody(body, dx, dy) {
@@ -527,15 +592,23 @@ export class Game {
         const t = segmentCircle(bullet.x, bullet.y, nx, ny, enemy.x, enemy.y, enemy.radius + bullet.radius);
         if (t !== null && t < wallT) hits.push({ enemy, t });
       }
+      for (const barrel of this.barrels) {
+        if (!barrel.active || bullet.hitIds.has(barrel.id)) continue;
+        const t = segmentCircle(bullet.x, bullet.y, nx, ny, barrel.x, barrel.y, barrel.radius + bullet.radius);
+        if (t !== null && t < wallT) hits.push({ barrel, t });
+      }
       hits.sort((a, b) => a.t - b.t);
       let endT = wallT;
-      for (const { enemy, t } of hits) {
+      for (const { enemy, barrel, t } of hits) {
+        // A preceding blast may already have defeated a later target in this sweep.
+        if (enemy ? enemy.hp <= 0 : !barrel.active) continue;
         const def = WEAPONS[bullet.weapon];
         const hitDistance = travelled + stepDistance * t;
         const falloff = def?.falloffStart === undefined ? 1
           : clamp(1 - (hitDistance - def.falloffStart) / (def.range - def.falloffStart) * (1 - def.minDamageRatio), def.minDamageRatio, 1);
-        this.damageEnemy(enemy, bullet.damage * falloff);
-        bullet.hitIds.add(enemy.id);
+        if (enemy) this.damageEnemy(enemy, bullet.damage * falloff);
+        else this.damageBarrel(barrel, bullet.damage * falloff);
+        bullet.hitIds.add((enemy || barrel).id);
         bullet.remainingHits -= 1;
         if (bullet.remainingHits <= 0) { endT = t; bullet.life = 0; break; }
       }
@@ -551,15 +624,50 @@ export class Game {
   }
 
   damageEnemy(enemy, damage) {
-    if (enemy.hp <= 0) return;
+    damage = Math.max(0, finite(damage));
+    if (enemy.hp <= 0 || damage <= 0) return;
     enemy.hp -= damage;
     enemy.hitFlash = 0.09;
     this.addEffect('hit', enemy.x, enemy.y, 12, 0.14, '#fff1c9');
+    this.events.push({ type: 'hit', enemyType: enemy.type, x: enemy.x, y: enemy.y });
     if (enemy.hp <= 0) {
       this.kills += 1; this.waveKills += 1;
       this.score += ENEMY_TYPES[enemy.type]?.score || 10;
       this.events.push({ type: 'kill', enemyType: enemy.type, x: enemy.x, y: enemy.y });
       this.dropLoot(enemy.x, enemy.y);
+    }
+  }
+
+  damageBarrel(barrel, damage) {
+    damage = Math.max(0, finite(damage));
+    if (!barrel.active || damage <= 0) return;
+    barrel.hp = Math.max(0, barrel.hp - damage);
+    this.addEffect('hit', barrel.x, barrel.y, 17, 0.14, '#ffdc91');
+    if (barrel.hp <= 0) this.explodeBarrel(barrel);
+  }
+
+  damageBlast(x, y, radius, damage) {
+    for (const enemy of this.enemies) {
+      const distance = Math.hypot(enemy.x - x, enemy.y - y);
+      if (distance <= radius + enemy.radius) this.damageEnemy(enemy, damage * Math.max(0.4, 1 - distance / (radius * 1.6)));
+    }
+  }
+
+  explodeBarrel(first) {
+    const queue = [first];
+    for (let index = 0; index < queue.length; index++) {
+      const barrel = queue[index];
+      if (!barrel.active) continue;
+      // Mark it consumed before damage and chained barrels: each station explodes once per refresh.
+      barrel.active = false;
+      barrel.hp = 0;
+      barrel.respawnRemaining = BARREL_RULES.respawnSeconds;
+      this.addEffect('barrelExplosion', barrel.x, barrel.y, BARREL_RULES.blastRadius, 0.55, '#ffae66');
+      this.damageBlast(barrel.x, barrel.y, BARREL_RULES.blastRadius, BARREL_RULES.damage);
+      this.events.push({ type: 'barrelExplosion', barrelId: barrel.id, x: barrel.x, y: barrel.y });
+      for (const other of this.barrels) {
+        if (other.active && distanceSquared(other, barrel) <= (BARREL_RULES.blastRadius + other.radius) ** 2) queue.push(other);
+      }
     }
   }
 
@@ -576,9 +684,9 @@ export class Game {
       if (grenade.fuse <= 0) {
         const blastRadius = 135;
         this.addEffect('explosion', grenade.x, grenade.y, blastRadius, 0.5, '#ffcf78');
-        for (const enemy of this.enemies) {
-          const distance = Math.hypot(enemy.x - grenade.x, enemy.y - grenade.y);
-          if (distance <= blastRadius + enemy.radius) this.damageEnemy(enemy, 190 * Math.max(0.4, 1 - distance / (blastRadius * 1.6)));
+        this.damageBlast(grenade.x, grenade.y, blastRadius, 190);
+        for (const barrel of this.barrels) {
+          if (barrel.active && distanceSquared(barrel, grenade) <= (blastRadius + barrel.radius) ** 2) this.explodeBarrel(barrel);
         }
         this.events.push({ type: 'explosion', x: grenade.x, y: grenade.y });
       }
@@ -587,8 +695,8 @@ export class Game {
     this.enemies = this.enemies.filter(enemy => enemy.hp > 0);
   }
 
-  addEffect(type, x, y, radius, life, color) {
-    this.effects.push({ id: this.nextId++, type, x, y, radius, life, maxLife: life, color });
+  addEffect(type, x, y, radius, life, color, extra = {}) {
+    this.effects.push({ id: this.nextId++, type, x, y, radius, life, maxLife: life, color, ...extra });
     if (this.effects.length > 160) this.effects.shift();
   }
 

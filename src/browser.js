@@ -1,4 +1,5 @@
 import { createApp } from './app.js';
+import { createAudio } from './audio.js';
 
 const canvas = document.getElementById('game');
 const storage = {
@@ -9,7 +10,8 @@ const size = () => {
   const rect = canvas.getBoundingClientRect();
   return { width: rect.width, height: rect.height, pixelRatio: Math.min(devicePixelRatio || 1, 2) };
 };
-const app = createApp({ canvas, ...size(), storage, platform: 'web' });
+const audio = createAudio();
+const app = createApp({ canvas, ...size(), storage, platform: 'web', audio });
 const point = (event) => {
   const rect = canvas.getBoundingClientRect();
   return { x: event.clientX - rect.left, y: event.clientY - rect.top, button: event.button };
@@ -46,6 +48,7 @@ for (const type of ['down', 'up']) {
 window.addEventListener('resize', () => app.resize(size()));
 window.addEventListener('blur', () => app.pause());
 document.addEventListener('visibilitychange', () => { if (document.hidden) app.pause(); });
+window.addEventListener('pagehide', () => { app.pause(); audio.pause(); });
 function frame(timestamp) { app.frame(timestamp); requestAnimationFrame(frame); }
 requestAnimationFrame(frame);
 // Read-only diagnostics for local QA and embedding; gameplay stays in the app.

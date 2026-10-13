@@ -115,7 +115,7 @@ for (const scheduler of ['canvas', 'global', 'timeout']) {
     h.step(0);
     assert.ok(h.drawnText.includes('蛋壳突围'), 'the actual menu renders');
     assert.equal(h.app.getSnapshot().best.score, 123);
-    assert.deepEqual(h.storageReads, ['shellbound:shellbound.best.v1']);
+    assert.deepEqual(h.storageReads, ['shellbound:shellbound.best.v1', 'shellbound:shellbound.settings.v1']);
 
     const staleFrame = h.frames.values().next().value;
     h.events.Hide();

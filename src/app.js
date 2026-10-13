@@ -1,19 +1,26 @@
 import { Game, MAPS, WEAPONS, WEAPON_ORDER } from './game.js';
 import { drawArena, drawEgg } from './render.js';
+import { findAimTarget } from './aim.js';
 
 const C = { bg: '#101e25', panel: '#1b2c33', line: '#31434a', ink: '#f4f1e5', muted: '#91a5aa', lime: '#c7ed83', teal: '#8dd4c2', coral: '#f6a38d' };
 const FONT = '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
 const weaponIds = WEAPON_ORDER;
-const mapLabels = { courtyard: ['薄荷庭院', '开阔中央 · 灵活绕行', 'MINT COURTYARD'], greenhouse: ['落日温室', '交错掩体 · 守住通道', 'SUNSET GREENHOUSE'] };
+const mapLabels = { courtyard: ['薄荷庭院', '开阔中央 · 灵活绕行', 'MINT COURTYARD'], greenhouse: ['汽泡工坊', '爆破油桶 · 加速穿行', 'BUBBLE WORKSHOP'] };
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 
-export function createApp({ canvas, width, height, pixelRatio = 1, storage, platform = 'web' }) {
+export function createApp({ canvas, width, height, pixelRatio = 1, storage, platform = 'web', audio }) {
   const ctx = canvas.getContext('2d');
   let size = { width, height, pixelRatio }, layout, game = null, screen = 'menu', selectedMap = MAPS[0].id;
   let paused = false, help = false, weaponPicker = false, lastTimestamp = null, clock = 0, pointer = null, shooting = false;
   let buttons = [], touches = new Map(), keys = new Set(), actions = {}, toast = '', toastUntil = 0, resultSaved = false;
   let best = { wave: 0, score: 0 };
+  let muted = false, aimAssist = true, facing = -Math.PI / 2, aimManual = false;
   try { best = { ...best, ...JSON.parse(storage?.getItem('shellbound.best.v1') || '{}') }; } catch { /* A save is optional. */ }
+  try { const settings = JSON.parse(storage?.getItem('shellbound.settings.v1') || '{}'); muted = settings.muted === true; aimAssist = settings.aimAssist !== false; } catch { /* Defaults work without storage. */ }
+  audio?.setMuted(muted);
+  function saveSettings() { try { storage?.setItem('shellbound.settings.v1', JSON.stringify({ muted, aimAssist })); } catch { /* Settings are optional. */ } }
+  function toggleSound() { muted = !muted; audio?.setMuted(muted); saveSettings(); }
+  function toggleAim() { aimAssist = !aimAssist; if (game) game.aimTarget = null; saveSettings(); }
 
   function resize(next) {
     size = { ...size, ...next };
@@ -49,16 +56,20 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       grenade: { x: layout.w - 223, y: layout.h - 215, r: 39 },
     };
   }
-  function clearInput() { keys.clear(); touches.clear(); pointer = null; shooting = false; actions = {}; weaponPicker = false; }
+  // Use a physical-pixel threshold so a small thumb wobble does not switch
+  // from assisted fire to manual aim on a small landscape screen.
+  function fireDragThreshold() { return Math.max(12, 14 / layout.scale); }
+  function clearInput() { keys.clear(); touches.clear(); pointer = null; shooting = false; actions = {}; weaponPicker = false; aimManual = false; if (game) game.aimTarget = null; }
   function start() {
     game = new Game({ mapId: selectedMap, seed: Date.now() >>> 0 });
+    facing = game.player.angle; audio?.pause(); audio?.unlock(); audio?.playEvents(game.events);
     screen = 'game'; paused = false; help = false; resultSaved = false; lastTimestamp = null;
-    resize(size); toast = '移动带动瞄准，按住开火！'; toastUntil = clock + 3;
+    resize(size); toast = selectedMap === 'greenhouse' ? '打爆油桶清怪 · 踩箭头加速带' : aimAssist ? '移动转向 · 开火辅助瞄准 · 拖动手动瞄准' : '移动转向 · 按住开火 · 拖动手动瞄准'; toastUntil = clock + 3;
   }
-  function menu() { screen = 'menu'; game = null; paused = false; help = false; resize(size); }
-  function pause() { if (game && !['won', 'dead'].includes(game.status)) paused = true; clearInput(); lastTimestamp = null; }
+  function menu() { audio?.pause(); screen = 'menu'; game = null; paused = false; help = false; resize(size); }
+  function pause() { audio?.pause(); if (game && !['won', 'dead'].includes(game.status)) paused = true; clearInput(); lastTimestamp = null; }
   function resume() { clearInput(); lastTimestamp = null; }
-  function togglePause() { if (game && !['won', 'dead'].includes(game.status)) { paused = !paused; help = false; clearInput(); lastTimestamp = null; } }
+  function togglePause() { if (game && !['won', 'dead'].includes(game.status)) { paused = !paused; if (paused) audio?.pause(); help = false; clearInput(); lastTimestamp = null; } }
 
   function rounded(x, y, w, h, radius = 14, fill, stroke) {
     ctx.beginPath(); ctx.moveTo(x + radius, y); ctx.lineTo(x + w - radius, y); ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
@@ -86,6 +97,12 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       ctx.beginPath(); ctx.arc(x, cy, 18, 0, Math.PI * 2); ctx.stroke();
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.beginPath(); ctx.moveTo(x + dx * 11, cy + dy * 11); ctx.lineTo(x + dx * 25, cy + dy * 25); ctx.stroke(); }
       ctx.beginPath(); ctx.arc(x, cy, 4, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+      const touch = [...touches.values()].find(item => item.role === 'fire');
+      if (touch && aimManual) {
+        const dx = touch.x - touch.base.x, dy = touch.y - touch.base.y, dist = Math.hypot(dx, dy);
+        if (dist > 0) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx / dist * (r - 12), y + dy / dist * (r - 12)); ctx.stroke();
+          ctx.beginPath(); ctx.arc(x + dx / dist * (r - 12), y + dy / dist * (r - 12), 7, 0, Math.PI * 2); ctx.fill(); }
+      }
     } else if (role === 'reload') {
       ctx.beginPath(); ctx.arc(x, cy, 13, -.7, Math.PI * 1.4); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x + 9, cy - 15); ctx.lineTo(x + 18, cy - 12); ctx.lineTo(x + 11, cy - 5); ctx.stroke();
@@ -101,12 +118,14 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function line(x1, y1, x2, y2, color = C.line) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.stroke(); }
   function mapPreview(map, x, y, w, h) {
     const greenhouse = map.id === 'greenhouse';
-    rounded(x, y, w, h, 12, greenhouse ? '#9b7e66' : '#668f84');
+    rounded(x, y, w, h, 12, greenhouse ? '#65859a' : '#668f84');
     ctx.save(); ctx.translate(x + 8, y + 8); ctx.scale((w - 16) / map.width, (h - 16) / map.height);
     ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.lineWidth = 2;
     for (let i = 0; i < map.width; i += 100) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, map.height); ctx.stroke(); }
     for (let i = 0; i < map.height; i += 100) { ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(map.width, i); ctx.stroke(); }
-    for (const obstacle of map.obstacles) { ctx.fillStyle = greenhouse ? '#d6b294' : '#c1d4af'; ctx.fillRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h); }
+    for (const zone of map.speedZones || []) { ctx.fillStyle = '#65e4d2'; ctx.fillRect(zone.x, zone.y, zone.w, zone.h); }
+    for (const obstacle of map.obstacles) { ctx.fillStyle = greenhouse ? '#d4b56b' : '#c1d4af'; ctx.fillRect(obstacle.x, obstacle.y, obstacle.w, obstacle.h); }
+    for (const station of map.barrelStations || []) { ctx.fillStyle = '#ff9c65'; ctx.beginPath(); ctx.arc(station.x, station.y, 23, 0, Math.PI * 2); ctx.fill(); }
     ctx.fillStyle = '#f6f0cf'; ctx.beginPath(); ctx.arc(map.width / 2, map.height / 2, 30, 0, Math.PI * 2); ctx.fill(); ctx.restore();
   }
   function drawLogo(x, y, small = false) {
@@ -129,7 +148,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function drawMenu() {
     const { compact, w, h } = layout;
     drawLogo(38, 27, compact);
-    button(w - 166, 30, 126, 40, '操作指南', () => { help = true; }, { fontSize: 15 });
+    button(w - 268, 30, 90, 40, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 14 });
+    button(w - 166, 30, 126, 40, '操作指南', () => { audio?.pause(); help = true; }, { fontSize: 15 });
     if (!compact) {
       text('O P E R A T I O N   /   0 1', 64, 141, 12, C.teal, 700);
       text('守住最后', 60, 223, 76, C.ink, 800);
@@ -175,6 +195,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text(ammo.clip, 293, 74, 27, C.lime, 800, 'right');
     text(`备用 ${p.currentWeapon === 'pistol' ? '∞' : ammo.reserve}`, 293, 96, 12, C.muted, 600, 'right');
     text(weaponPicker ? '点击收起  ▴' : '点击换枪  ▾', 40, 112, 12, C.teal, 650);
+    text(p.speedMultiplier > 1 ? '加速 ×1.45' : aimManual ? '手动瞄准' : aimAssist ? '辅助瞄准' : '移动瞄准', 293, 114, 12, p.speedMultiplier > 1 ? C.lime : C.teal, 650, 'right');
     buttons.push({ x: 24, y: 61, w: 290, h: 65, callback: () => { weaponPicker = !weaponPicker; }, label: '切换武器' });
     if (weaponPicker) {
       rounded(24, 142, 290, 186, 14, 'rgba(16,30,37,.94)', C.line);
@@ -233,13 +254,15 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function shade() { ctx.fillStyle = 'rgba(8,17,21,.79)'; ctx.fillRect(0, 0, layout.w, layout.h); buttons = []; }
   function drawPause() {
-    shade(); const x = layout.w / 2 - 220, y = layout.h / 2 - 145;
-    rounded(x, y, 440, 290, 22, C.panel, C.line);
+    shade(); const x = layout.w / 2 - 220, y = layout.h / 2 - 178;
+    rounded(x, y, 440, 356, 22, C.panel, C.line);
     text('喘口气，再出发。', layout.w / 2, y + 49, 31, C.ink, 750, 'center');
     text('暂停期间，战场和倒计时都会停止。', layout.w / 2, y + 88, 15, C.muted, 500, 'center');
     button(x + 28, y + 123, 384, 48, '继续突围', () => { paused = false; lastTimestamp = null; clearInput(); }, { fill: C.lime, border: C.lime, color: C.bg });
     button(x + 28, y + 184, 184, 47, '重新开始', start, { fontSize: 17 }); button(x + 228, y + 184, 184, 47, '返回战区', menu, { fontSize: 17 });
-    text('Esc / P 继续', layout.w / 2, y + 261, 12, C.muted, 500, 'center');
+    button(x + 28, y + 245, 184, 47, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 16 });
+    button(x + 228, y + 245, 184, 47, aimAssist ? '辅助瞄准：开' : '辅助瞄准：关', toggleAim, { fontSize: 16 });
+    text('Esc / P 继续', layout.w / 2, y + 326, 12, C.muted, 500, 'center');
   }
   function drawResult() {
     shade(); const won = game.status === 'won', x = layout.w / 2 - 248, y = layout.h / 2 - 177;
@@ -256,11 +279,11 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     rounded(x, y, boxW, boxH, 22, C.panel, C.line); text('突围指南', x + 30, y + 39, 29, C.ink, 750);
     const rows = [
       ['移动与射击', '电脑：WASD / 方向键移动，鼠标瞄准，左键射击'],
-      ['手机操作', '移动带动瞄准；按住开火，也可拖动开火按钮微调方向'],
+      ['手机操作', '移动转向；按住开火辅助瞄准，拖动开火钮手动瞄准'],
       ['武器管理', '左上角换枪与查看弹药；右侧圆形按钮换弹、扔雷'],
       ['盾牌与手雷', '盾牌先吸收伤害；G 扔手雷，也可点击手雷按钮'],
       ['补给与闯关', '捡新枪解锁，重复枪补弹；每波清关都有补给'],
-      ['最后的保障', '手枪备用弹药无限，但弹匣用完仍需换弹'],
+      ['工坊机关', '油桶爆炸清怪，过一会补充；踩箭头带加速，离开恢复'],
     ];
     rows.forEach(([title, detail], i) => { const ry = y + 88 + i * (layout.compact ? 44 : 51); text(title, x + 30, ry, 16, C.teal, 700); text(detail, x + 30, ry + 23, 14, C.ink); });
     button(x + 30, y + boxH - 68, boxW - 60, 44, '准备好了', () => { help = false; clearInput(); lastTimestamp = null; }, { fill: C.lime, border: C.lime, color: C.bg, fontSize: 17 });
@@ -275,23 +298,29 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function collectInput() {
     let moveX = Number(keys.has('d') || keys.has('ArrowRight')) - Number(keys.has('a') || keys.has('ArrowLeft'));
     let moveY = Number(keys.has('s') || keys.has('ArrowDown')) - Number(keys.has('w') || keys.has('ArrowUp'));
-    let fire = shooting, aimedTouch = null;
+    let fire = shooting, aimedTouch = null, touchFire = false;
     for (const touch of touches.values()) {
       const dx = touch.x - touch.base.x, dy = touch.y - touch.base.y, dist = Math.hypot(dx, dy);
       if (touch.role === 'move' && dist > 6) {
         moveX += clamp(dx / controlBounds().move.r, -1, 1);
         moveY += clamp(dy / controlBounds().move.r, -1, 1);
       } else if (touch.role === 'fire') {
-        fire = true;
-        if (dist > 12) aimedTouch = { x: dx / dist, y: dy / dist };
+        fire = true; touchFire = true;
+        if (dist > fireDragThreshold()) aimedTouch = { x: dx / dist, y: dy / dist };
       }
     }
     moveX = clamp(moveX, -1, 1); moveY = clamp(moveY, -1, 1);
     const p = game.player, movementLength = Math.hypot(moveX, moveY);
-    let direction = { x: Math.cos(p.angle), y: Math.sin(p.angle) };
-    if (movementLength > 0) direction = { x: moveX / movementLength, y: moveY / movementLength };
+    if (movementLength > 0) facing = Math.atan2(moveY, moveX);
+    if (aimedTouch) facing = Math.atan2(aimedTouch.y, aimedTouch.x);
+    const direction = { x: Math.cos(facing), y: Math.sin(facing) };
     let target = pointer ? world(pointer) : { x: p.x + direction.x * 500, y: p.y + direction.y * 500 };
     if (aimedTouch) target = { x: p.x + aimedTouch.x * 500, y: p.y + aimedTouch.y * 500 };
+    aimManual = Boolean(aimedTouch || pointer);
+    const arena = arenaBounds();
+    const assisted = aimAssist && touchFire && !aimManual ? findAimTarget(game, facing, { x: arena.camera.x, y: arena.camera.y, w: arena.w / arena.scale, h: arena.h / arena.scale }, game.aimTarget?.id) : null;
+    game.aimTarget = assisted ? { id: assisted.id, x: assisted.x, y: assisted.y } : null;
+    if (assisted) target = { x: assisted.x, y: assisted.y };
     const input = { moveX, moveY, aimX: target.x, aimY: target.y, shoot: fire, ...actions };
     actions = {}; return input;
   }
@@ -308,6 +337,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const p = logical(point);
     if (type === 'up' || type === 'cancel') { shooting = false; return; }
     if (type === 'down' && point.button === 0) {
+      audio?.unlock();
       if (buttonAt(p)?.role === 'fire' && game && !paused && !help && game.status === 'playing') { shooting = true; return; }
       if (activate(p)) return;
       if (game && !paused && !help && game.status === 'playing') shooting = true;
@@ -317,6 +347,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function handleKey(type, key) {
     const k = key.length === 1 ? key.toLowerCase() : key;
     if (type === 'up') { keys.delete(k); return; }
+    audio?.unlock();
     if (k === 'Escape' || k === 'p') { if (help) { help = false; clearInput(); } else togglePause(); return; }
     if (screen === 'menu') { if (k === 'Enter' && !help) start(); return; }
     if (paused || help || !game || ['dead', 'won'].includes(game.status)) return;
@@ -331,6 +362,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       const p = logical(touch);
       if (type === 'end' || type === 'cancel') { touches.delete(touch.id); continue; }
       if (type === 'start') {
+        audio?.unlock();
         pointer = null;
         const playing = screen === 'game' && !paused && !help && game && !['dead', 'won'].includes(game.status);
         if (playing && buttonAt(p)?.role === 'fire') {
@@ -354,19 +386,20 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     clock += dt;
     if (game && !paused && !help && !isPortrait()) {
       game.update(dt, collectInput()); saveResult();
+      audio?.playEvents(game.events);
       for (const event of game.events || []) {
         if (event.type === 'unlock') { toast = `${WEAPONS[event.weaponId]?.label || '新武器'}已解锁，点击武器卡装备`; toastUntil = clock + 3; }
       }
     }
     ctx.setTransform(size.pixelRatio, 0, 0, size.pixelRatio, 0, 0); ctx.fillStyle = C.bg; ctx.fillRect(0, 0, size.width, size.height);
     buttons = [];
-    if (isPortrait()) { drawPortrait(); clearInput(); return; }
+    if (isPortrait()) { audio?.pause(); drawPortrait(); clearInput(); return; }
     ctx.translate(layout.ox, layout.oy); ctx.scale(layout.scale, layout.scale);
     if (screen === 'menu') drawMenu(); else drawGame();
     if (help) drawHelp();
   }
   function getSnapshot() {
-    return { screen, paused, help, weaponPicker, selectedMap, best, layout: { ...layout }, controls: controlBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { status: game.status, wave: game.wave, score: game.score, time: game.time, kills: game.kills, mapId: game.map.id, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
+    return { screen, paused, help, weaponPicker, selectedMap, best, settings: { muted, aimAssist }, audio: audio?.getSnapshot() || null, aim: { facing, manual: aimManual, targetId: game?.aimTarget?.id ?? null }, layout: { ...layout }, controls: controlBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { status: game.status, wave: game.wave, score: game.score, time: game.time, kills: game.kills, mapId: game.map.id, environment: game.environmentSnapshot?.() || null, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
   }
   resize({ width, height, pixelRatio });
   return { frame, resize, handleTouch, handleKey, handlePointer, pause, resume, getSnapshot };
