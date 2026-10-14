@@ -3,7 +3,7 @@
   "miniprogramRoot": "./",
   "compileType": "game",
   "projectname": "shellbound-mvp",
-  "appid": "touristappid",
+  "appid": "wx1a1efb651d164fae",
   "setting": {
     "urlCheck": false,
     "es6": true,

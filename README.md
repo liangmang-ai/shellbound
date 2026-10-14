@@ -6,6 +6,8 @@
 
 需要 Node.js 20 或更新版本。
 
+`npm run build` 会重新创建 `dist/web` 和 `dist/wechat`。当前已导入的微信工程目录含本地 Git 仓库与私有配置，重构建前请备份这些内容，并在构建后恢复；仅更换 AppID 无需重构建。
+
 ```sh
 npm install
 npm run build
@@ -71,7 +73,7 @@ dist/web/       浏览器版：index.html、app.js、source map、assets/audio
 dist/wechat/    微信版：game.js、game.json、project.config.json、assets/audio
 ```
 
-在微信开发者工具中以「小游戏」项目导入 `dist/wechat`。当前 `wechat/project.config.json` 的 AppID 为占位值 `touristappid`；使用你自己的小游戏 AppID 替换源码配置后重新构建。开发者工具允许的测试方式和 AppID 权限以实际工具为准。参考 [微信官方小游戏示例配置](https://github.com/wechat-miniprogram/minigame-lockstep-demo/blob/master/project.config.json)。
+在微信开发者工具中以「小游戏」项目导入 `dist/wechat`。当前源码和已导入工程均使用用户提供的小游戏 AppID `wx1a1efb651d164fae`，开发工具已识别为「小游戏模式」，模拟器正常显示游戏首页，调试器无错误，上传入口可用；尚未上传、提审或发布。仅切换账号时，同时修改 `wechat/project.config.json` 和已导入工程 `dist/wechat/project.config.json` 的 AppID，再重新打开工程。开发者工具允许的测试方式和 AppID 权限以实际工具为准。参考 [微信官方小游戏示例配置](https://github.com/wechat-miniprogram/minigame-lockstep-demo/blob/master/project.config.json)。
 
 微信入口使用 `wx.createCanvas`、触摸事件和本地存储；菜单、HUD 与战斗都在 Canvas 内绘制。打包后没有浏览器 DOM 依赖，也没有后端接口。
 
