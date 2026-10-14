@@ -39,14 +39,19 @@ test('shield absorbs damage first and health only takes the remainder', () => {
   assert.equal(game.player.hp, 90);
 });
 
-test('crowd damage uses one grace interval and enemies do not block player movement', () => {
+test('solid crowd contact uses one grace interval while enemies block movement', () => {
   const game = new Game(); quiet(game);
-  for (let i = 0; i < 8; i++) enemy(game, { x: game.player.x, y: game.player.y });
+  const start = { x: game.player.x, y: game.player.y };
+  enemy(game, { x: start.x + 35.001, y: start.y });
+  enemy(game, { x: start.x - 35.001, y: start.y });
+  enemy(game, { x: start.x, y: start.y + 35.001 });
+  enemy(game, { x: start.x, y: start.y - 35.001 });
   game.update(1 / 60, { moveX: 1 });
   assert.equal(game.player.shield, 23);
-  assert.ok(game.player.x > 640);
+  assert.ok(game.player.x - start.x < .001, 'the player cannot walk through the front enemy');
   game.update(1 / 60, { moveX: 1 });
   assert.equal(game.player.shield, 23);
+  assert.equal(game.player.y, start.y, 'crowd resolution cannot shove the player sideways');
 });
 
 test('empty pistol reloads automatically forever without exhausting reserve', () => {

@@ -35,16 +35,19 @@ export function createApp(config) {
 });
 const bundle = output.outputFiles[0].text;
 
-function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = false, width = 844, height = 390 } = {}) {
-  const events = {}, frames = new Map(), drawnText = [], paintedPanels = [], storageReads = [];
+function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = false, width = 844, height = 390, storedValues } = {}) {
+  const events = {}, frames = new Map(), drawnText = [], textDraws = [], paintedPanels = [], storageReads = [];
   let pathPoints = [];
-  const values = new Map([['shellbound:shellbound.best.v1', '{"wave":7,"score":123}']]);
+  const values = new Map(storedValues || [['shellbound:shellbound.best.v1', '{"wave":7,"score":123}']]);
   let nextId = 1;
   const size = { windowWidth: width, windowHeight: height, screenWidth: width, screenHeight: height, pixelRatio: 3 };
   const requestFrame = (callback) => { const id = nextId++; frames.set(id, callback); return id; };
   const cancelFrame = (id) => frames.delete(id);
   const context2d = new Proxy({
-    fillText(value) { drawnText.push(String(value)); },
+    fillText(value, x, y) {
+      drawnText.push(String(value));
+      textDraws.push({ value: String(value), x, y, font: this.font });
+    },
     beginPath() { pathPoints = []; },
     moveTo(x, y) { pathPoints.push([x, y]); },
     lineTo(x, y) { pathPoints.push([x, y]); },
@@ -94,16 +97,19 @@ function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = 
     const { scale, ox, oy } = app.getSnapshot().layout;
     events[`Touch${type}`]({ changedTouches: [{ identifier: id, clientX: x * scale + ox, clientY: y * scale + oy }] });
   }
-  function startGame() {
-    step(0);
-    const button = app.getSnapshot().buttons.find(item => item.label.startsWith('开始突围'));
-    assert.ok(button);
+  function tapLabel(label) {
+    const button = app.getSnapshot().buttons.find(item => item.label === label || item.label.startsWith(label));
+    assert.ok(button, `button ${label} is rendered`);
     touch('Start', 1, button.x + button.w / 2, button.y + button.h / 2);
     touch('End', 1, button.x + button.w / 2, button.y + button.h / 2);
-    step(16);
+  }
+  function startGame(timestamp = 0) {
+    step(timestamp);
+    tapLabel('开始突围');
+    step(timestamp + 16);
     assert.equal(app.getSnapshot().screen, 'game');
   }
-  return { app, config: environment.__observedConfig, canvas, size, events, frames, step, touch, startGame, drawnText, paintedPanels, storageReads, values };
+  return { app, config: environment.__observedConfig, canvas, size, events, frames, step, touch, tapLabel, startGame, drawnText, textDraws, paintedPanels, storageReads, values };
 }
 
 for (const scheduler of ['canvas', 'global', 'timeout']) {
@@ -130,6 +136,71 @@ for (const scheduler of ['canvas', 'global', 'timeout']) {
     assert.equal(h.frames.size, 0);
   });
 }
+
+test('WeChat difficulty selection survives relaunch and the creative map restarts with the selected mode', () => {
+  const first = harness({ width: 667, height: 375 });
+  first.step(0);
+  const menu = first.app.getSnapshot();
+  assert.equal(menu.selectedMap, 'greenhouse', 'the workshop is the first default map');
+  assert.equal(menu.selectedDifficulty, 'easy', 'new players start in the accessible mode');
+  const workshop = menu.buttons.find(button => button.label === '汽泡工坊');
+  const corridor = menu.buttons.find(button => button.label === '星糖回廊');
+  assert.ok(workshop && corridor && workshop.y < corridor.y, 'the new map follows the workshop');
+  assert.equal(menu.buttons.some(button => button.label === '薄荷庭院'), false, 'the old courtyard is not offered');
+  assert.ok(menu.buttons.every(button => button.x >= 0 && button.y >= 0 && button.x + button.w <= menu.layout.w && button.y + button.h <= menu.layout.h), 'map and difficulty choices fit the smallest phone');
+  first.tapLabel('挑战');
+  first.step(16);
+  assert.equal(first.app.getSnapshot().selectedDifficulty, 'hard');
+  const persisted = JSON.parse(first.values.get('shellbound:shellbound.settings.v1'));
+  assert.equal(persisted.difficultyId, 'hard');
+  assert.equal(persisted.aimAssist, true);
+
+  const relaunched = harness({ width: 667, height: 375, storedValues: first.values });
+  relaunched.step(0);
+  assert.equal(relaunched.app.getSnapshot().selectedDifficulty, 'hard', 'a new WeChat instance reads the saved difficulty');
+  relaunched.tapLabel('星糖回廊');
+  relaunched.step(16);
+  relaunched.tapLabel('开始突围');
+  relaunched.step(32);
+  let state = relaunched.app.getSnapshot();
+  assert.equal(state.game.mapId, 'candyloop');
+  assert.equal(state.game.difficultyId, 'hard');
+  assert.equal(state.game.revivesRemaining, 3);
+  assert.equal(state.game.environment.speedZones.length, 2);
+  relaunched.tapLabel('Ⅱ 暂停');
+  relaunched.step(48);
+  relaunched.tapLabel('重新开始');
+  relaunched.step(64);
+  state = relaunched.app.getSnapshot();
+  assert.equal(state.game.mapId, 'candyloop', 'restart retains the chosen map');
+  assert.equal(state.game.difficultyId, 'hard', 'restart retains the chosen difficulty');
+  assert.equal(state.game.wave, 1);
+  assert.equal(state.game.revivesRemaining, 3);
+
+  relaunched.tapLabel('Ⅱ 暂停');
+  relaunched.step(80);
+  relaunched.tapLabel('返回战区');
+  relaunched.step(96);
+  relaunched.tapLabel('标准');
+  relaunched.step(112);
+  relaunched.tapLabel('汽泡工坊');
+  relaunched.step(128);
+  relaunched.tapLabel('开始突围');
+  relaunched.step(144);
+  state = relaunched.app.getSnapshot();
+  assert.equal(state.game.difficultyId, 'normal', 'returning to map selection applies a newly chosen difficulty');
+  assert.equal(state.game.mapId, 'greenhouse');
+});
+
+test('WeChat ignores invalid saved difficulty without losing sound or aim preferences', () => {
+  const h = harness({ storedValues: [['shellbound:shellbound.settings.v1', JSON.stringify({ difficultyId: '__proto__', muted: true, aimAssist: false })]] });
+  h.startGame();
+  const state = h.app.getSnapshot();
+  assert.equal(state.selectedDifficulty, 'easy');
+  assert.equal(state.game.difficultyId, 'easy');
+  assert.equal(state.settings.muted, true);
+  assert.equal(state.settings.aimAssist, false);
+});
 
 test('WeChat movement sets aim and a stationary fire press shoots until release or cancel', () => {
   const h = harness();
@@ -209,12 +280,15 @@ for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [
         `${circles[i].role} and ${circles[j].role} circles do not overlap`);
     }
     assert.ok(buttons.every(button => button.x >= 0 && button.y >= 0 && button.x + button.w <= layout.w && button.y + button.h <= layout.h), 'every HUD button remains inside the viewport');
-    const stats = h.paintedPanels.findLast(panel => panel.color === 'rgba(16,30,37,.84)');
-    const wave = h.paintedPanels.findLast(panel => panel.color === 'rgba(16,30,37,.76)');
+    const entry = buttons.find(button => button.label === '切换武器');
+    const stats = h.paintedPanels.findLast(panel => panel.x === entry.x && panel.w === entry.w && panel.y < entry.y && panel.y + panel.h >= entry.y + entry.h);
+    const wave = h.paintedPanels.findLast(panel => panel.x + panel.w / 2 === layout.w / 2 && panel.y < 40 && panel.y + panel.h > 68);
     const pause = buttons.find(button => button.label.includes('暂停'));
     assert.ok(stats && wave && pause, 'the actual rendered stats, wave, and pause HUD are observable');
     assert.ok(stats.x + stats.w <= wave.x && wave.x + wave.w <= pause.x, 'stats, wave, and pause panels never overlap, including 4:3 tablets');
-    const entry = buttons.find(button => button.label === '切换武器');
+    const smallHudText = h.textDraws.filter(draw => /^(生命 |盾牌 |备用 |打开武器库|辅助瞄准|剩余 )/.test(draw.value));
+    assert.ok(smallHudText.length >= 6, 'actual HUD labels and captions render');
+    assert.ok(smallHudText.every(draw => Number(/(\d+)px/.exec(draw.font)?.[1]) >= 18), 'HUD labels use enlarged readable fonts');
     assert.ok(entry.w * layout.scale >= 44 && entry.h * layout.scale >= 44, 'the collapsed weapon panel has a large touch entry');
     h.touch('Start', 50, entry.x + entry.w / 2, entry.y + entry.h / 2);
     h.touch('End', 50, entry.x + entry.w / 2, entry.y + entry.h / 2);
@@ -226,7 +300,7 @@ for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [
     assert.ok(cards.every(Boolean), 'all six weapon choices appear in the expanded picker');
     for (const card of cards) {
       assert.ok(card.w * layout.scale >= 44 && card.h * layout.scale >= 44, 'each weapon has a large touch target');
-      assert.ok(card.x >= 0 && card.x + card.w <= layout.w && card.y >= 0 && card.y + card.h <= 330, 'weapon choices stay grouped above movement');
+      assert.ok(card.x >= 0 && card.x + card.w <= layout.w && card.y >= 0 && card.y + card.h < controls.move.y - controls.move.r, 'weapon choices stay grouped above movement');
     }
     for (let i = 0; i < cards.length; i++) for (let j = i + 1; j < cards.length; j++) {
       const a = cards[i], b = cards[j];

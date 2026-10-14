@@ -196,8 +196,8 @@ test('assist can be disabled and settings persist while combat remains frozen', 
   h.tap('辅助瞄准：开'); h.step();
   h.tap('音效：开'); h.step();
   assert.equal(h.game.time, before);
-  assert.deepEqual(h.app.getSnapshot().settings, { aimAssist: false, muted: true });
-  assert.deepEqual(JSON.parse(saves.get('shellbound.settings.v1')), { muted: true, aimAssist: false });
+  assert.deepEqual(h.app.getSnapshot().settings, { aimAssist: false, muted: true, difficultyId: 'easy' });
+  assert.deepEqual(JSON.parse(saves.get('shellbound.settings.v1')), { muted: true, aimAssist: false, difficultyId: 'easy' });
   h.tap('继续突围'); h.step();
   const { move, fire } = h.app.getSnapshot().controls;
   h.game.enemies.push({ id: 901, type: 'grunt', radius: 17, hp: 1000, maxHp: 1000, x: 830, y: 430, speed: 0, damage: 12, hitFlash: 0 });
@@ -320,7 +320,7 @@ for (const [name, choose] of [
   assert.equal(h.app.getSnapshot().aim.targetId, 902, 'switching back immediately restores the pistol assist range');
 });
 
-test('revive button continues the same run once and records later results again', t => {
+test('revive button continues the same run three times and records later results again', t => {
   const saves = new Map();
   const h = harness(t, 'wechat', { storage: { getItem: key => saves.get(key), setItem: (key, value) => saves.set(key, value) } });
   h.game.player.weapons.rifle = h.game.makeAmmo('rifle'); h.game.equipWeapon('rifle');
@@ -330,11 +330,53 @@ test('revive button continues the same run once and records later results again'
   h.tap('免费复活'); h.step();
   assert.equal(h.game.status, 'playing'); assert.equal(h.game.wave, 4); assert.equal(h.game.score, 70);
   assert.equal(h.game.player.currentWeapon, 'rifle'); assert.equal(h.game.player.hp, 100);
-  assert.equal(h.app.getSnapshot().game.revivesRemaining, 0);
+  assert.equal(h.app.getSnapshot().game.revivesRemaining, 2);
   assert.equal(h.app.getSnapshot().game.player.reviveProtectionRemaining, 3);
   h.game.score = 200; h.game.status = 'dead'; h.game.player.hp = 0; h.step();
+  for (const remaining of [1, 0]) {
+    h.tap('免费复活'); h.step();
+    assert.equal(h.game.status, 'playing');
+    assert.equal(h.game.revivesRemaining, remaining);
+    assert.equal(h.game.player.currentWeapon, 'rifle');
+    assert.equal(h.game.wave, 4);
+    assert.equal(h.game.score, 200);
+    h.game.status = 'dead'; h.game.player.hp = 0; h.step();
+  }
   assert.equal(h.app.getSnapshot().buttons.some(button => button.label.includes('免费复活')), false);
   assert.equal(JSON.parse(saves.get('shellbound.best.v1')).score, 200);
   h.tap('再来一局'); h.step();
-  assert.equal(h.game.revivesRemaining, 1);
+  assert.equal(h.game.revivesRemaining, 3);
+});
+
+test('boss warnings leave the expanded weapon library readable and its close button usable on narrow screens', t => {
+  let path = [];
+  const strokes = [];
+  const context = new Proxy({
+    measureText: value => ({ width: String(value).length * 8 }),
+    createRadialGradient: () => ({ addColorStop() {} }),
+    beginPath() { path = []; },
+    moveTo(x, y) { path.push([x, y]); },
+    lineTo(x, y) { path.push([x, y]); },
+    quadraticCurveTo(cx, cy, x, y) { path.push([x, y]); },
+    stroke() {
+      if (!path.length) return;
+      const xs = path.map(point => point[0]), ys = path.map(point => point[1]);
+      strokes.push({ color: this.strokeStyle, x: Math.min(...xs), y: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) });
+    },
+  }, { get: (target, key) => key in target ? target[key] : () => {} });
+  const h = harness(t, 'wechat', { canvas: { getContext: () => context } });
+  h.game.enemies.push({ id: 902, type: 'tank', x: 100, y: 100, radius: 25, speed: 0,
+    hp: 170, maxHp: 170, damage: 22, hitFlash: 0, rangedCooldown: 99, rangedCharge: 0 });
+  for (const [width, height] of [[667, 375], [800, 600]]) {
+    h.app.resize({ width, height }); h.step();
+    h.tap('切换武器'); h.step();
+    const state = h.app.getSnapshot(), close = h.button('收起');
+    const banner = strokes.findLast(item => item.color === '#aa8fbb');
+    assert.ok(banner, 'the actual boss warning border is drawn');
+    const libraryRight = Math.max(...state.buttons.filter(item => !item.role && (item.label.endsWith('枪') || item.label === '星光大狙')).map(item => item.x + item.w));
+    assert.ok(banner.x > libraryRight && banner.x > close.x + close.w, 'warning stays to the right of the weapon choices and close button');
+    assert.ok(banner.right <= state.layout.w, 'warning stays visible');
+    h.tap('收起'); h.step();
+    assert.equal(h.app.getSnapshot().weaponPicker, false, 'the visible close button collapses the library');
+  }
 });

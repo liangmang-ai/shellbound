@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Game, BARREL_RULES, GRENADE_RULES } from '../src/game.js';
+import { Game, BARREL_RULES, GRENADE_RULES, FREE_REVIVES } from '../src/game.js';
 
 function quiet(mapId = 'courtyard') {
   const game = new Game({ seed: 73, mapId });
@@ -61,7 +61,7 @@ test('lethal oil blast wins over a same-frame last-enemy kill and health pickup'
   assert.equal(game.events.some(event => event.type === 'pickup'), false);
 });
 
-test('one free revive restores health and three seconds of protection while retaining the current run', () => {
+test('three free revives restore health and protection while retaining the current run', () => {
   const game = quiet('greenhouse'), p = game.player;
   game.wave = 5; game.waveKills = 2; game.waveTotal = 21;
   game.score = 975; game.kills = 31; game.time = 56;
@@ -77,7 +77,7 @@ test('one free revive restores health and three seconds of protection while reta
   p.hp = 0; p.shield = 0; game.status = 'dead';
   assert.equal(game.revive(), true);
   assert.equal(game.status, 'playing');
-  assert.equal(game.revivesRemaining, 0);
+  assert.equal(game.revivesRemaining, 2);
   assert.equal(p.hp, 100); assert.equal(p.shield, 35);
   assert.equal(p.invulnerability, 3); assert.equal(p.reviveProtectionRemaining, 3);
   assert.equal(p.x, game.map.start.x); assert.equal(p.y, game.map.start.y);
@@ -88,16 +88,24 @@ test('one free revive restores health and three seconds of protection while reta
   assert.equal(game.bullets.length, 1); assert.equal(game.bullets[0].owner, 'player');
   assert.equal(game.grenades.length, 0); assert.deepEqual(game.previousInput, {});
   assert.equal(game.events.at(-1).type, 'revive');
+  for (const remaining of [1, 0]) {
+    p.hp = 0; game.status = 'dead';
+    assert.equal(game.revive(), true);
+    assert.equal(game.revivesRemaining, remaining);
+    assert.equal(p.hp, 100); assert.equal(p.shield, 35);
+    assert.equal(p.reviveProtectionRemaining, 3);
+  }
   p.hp = 0; game.status = 'dead';
-  assert.equal(game.revive(), false);
+  assert.equal(game.revive(), false, 'a fourth death cannot create another revive');
   assert.equal(game.status, 'dead');
-  const fresh = quiet(); assert.equal(fresh.revivesRemaining, 1);
+  assert.equal(game.revivesRemaining, 0);
+  const fresh = quiet(); assert.equal(fresh.revivesRemaining, FREE_REVIVES);
 });
 
 test('revive refuses living or won games and finds a free landing away from a crowded start', () => {
   const game = quiet();
   assert.equal(game.revive(), false);
-  assert.equal(game.revivesRemaining, 1);
+  assert.equal(game.revivesRemaining, FREE_REVIVES);
   game.status = 'won'; assert.equal(game.revive(), false);
   const walker = enemy(game, { x: game.map.start.x, y: game.map.start.y });
   game.status = 'dead'; game.player.hp = 0;

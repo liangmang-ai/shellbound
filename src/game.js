@@ -3,6 +3,18 @@ export const MAX_WAVES = 10;
 export const BOSS_ATTACK = Object.freeze({ interval: 4, windup: 0.85, bulletSpeed: 310, damage: 18, radius: 7, life: 5, spread: 0.18 });
 export const BARREL_RULES = Object.freeze({ hp: 44, radius: 19, blastRadius: 145, damage: 155, playerDamage: 45, respawnSeconds: 12 });
 export const GRENADE_RULES = Object.freeze({ speed: 420, radius: 7, fuse: 1.05, defaultRange: 218.4, maxRange: 350, blastRadius: 135, damage: 190 });
+export const FREE_REVIVES = 3;
+export const DIFFICULTIES = Object.freeze({
+  easy: Object.freeze({ id: 'easy', label: '休闲', regularMultiplier: .60, tankMultiplier: .55,
+    hpMultiplier: .72, speedMultiplier: .80, damageMultiplier: .65, spawnIntervalMultiplier: 1.35,
+    bossInterval: 6, bossWindup: 1.10, bossBulletSpeedMultiplier: .80 }),
+  normal: Object.freeze({ id: 'normal', label: '标准', regularMultiplier: 1, tankMultiplier: 1,
+    hpMultiplier: 1, speedMultiplier: 1, damageMultiplier: 1, spawnIntervalMultiplier: 1,
+    bossInterval: BOSS_ATTACK.interval, bossWindup: BOSS_ATTACK.windup, bossBulletSpeedMultiplier: 1 }),
+  hard: Object.freeze({ id: 'hard', label: '挑战', regularMultiplier: 1.20, tankMultiplier: 1.25,
+    hpMultiplier: 1.18, speedMultiplier: 1.10, damageMultiplier: 1.15, spawnIntervalMultiplier: .90,
+    bossInterval: 3.5, bossWindup: .75, bossBulletSpeedMultiplier: 1.10 }),
+});
 export const WEAPON_ORDER = ['pistol', 'smg', 'rifle', 'lmg', 'sniper', 'shotgun'];
 export const WEAPONS = Object.freeze({
   pistol: { label: '啵啵手枪', clipSize: 12, reserveMax: Infinity, damage: 22, fireInterval: 0.24, reloadTime: 0.85, bulletSpeed: 950, spread: 0.025, piercing: 1, color: '#ffe5ad' },
@@ -13,7 +25,8 @@ export const WEAPONS = Object.freeze({
   shotgun: { label: '脆壳霰弹枪', clipSize: 6, reserveMax: 36, damage: 16, fireInterval: 0.8, reloadTime: 1.6, bulletSpeed: 950, spread: 0.30, piercing: 1, pellets: 7, range: 300, falloffStart: 80, minDamageRatio: 0.4, color: '#ffad84' },
 });
 
-export const MAPS = [
+// Legacy saves and physics regressions can still load the old courtyard directly.
+export const LEGACY_MAPS = [
   {
     id: 'courtyard', name: '薄荷庭院', theme: 'mint', width: 1280, height: 760,
     start: { x: 640, y: 380 },
@@ -24,6 +37,8 @@ export const MAPS = [
     ],
     spawnPoints: [{ x: 55, y: 95 }, { x: 1225, y: 95 }, { x: 55, y: 665 }, { x: 1225, y: 665 }, { x: 640, y: 45 }, { x: 640, y: 715 }],
   },
+];
+export const MAPS = [
   {
     id: 'greenhouse', name: '汽泡工坊', theme: 'factory', width: 1280, height: 760,
     start: { x: 640, y: 380 },
@@ -41,6 +56,23 @@ export const MAPS = [
       { id: 'south', x: 760, y: 555 }, { id: 'east', x: 1050, y: 230 },
     ],
   },
+  {
+    id: 'candyloop', name: '星糖回廊', theme: 'candy', width: 1280, height: 760,
+    start: { x: 640, y: 620 },
+    obstacles: [
+      { x: 520, y: 280, w: 240, h: 180 },
+      { x: 240, y: 140, w: 200, h: 60 }, { x: 240, y: 200, w: 60, h: 120 },
+      { x: 840, y: 140, w: 200, h: 60 }, { x: 980, y: 200, w: 60, h: 120 },
+      { x: 240, y: 440, w: 60, h: 120 }, { x: 240, y: 560, w: 200, h: 60 },
+      { x: 980, y: 440, w: 60, h: 120 }, { x: 840, y: 560, w: 200, h: 60 },
+    ],
+    spawnPoints: [{ x: 55, y: 95 }, { x: 1225, y: 95 }, { x: 55, y: 665 },
+      { x: 1225, y: 665 }, { x: 640, y: 55 }, { x: 640, y: 715 }],
+    speedZones: [
+      { id: 'starlane-west', x: 345, y: 330, w: 130, h: 100, multiplier: 1.45 },
+      { id: 'starlane-east', x: 805, y: 330, w: 130, h: 100, multiplier: 1.45 },
+    ],
+  },
 ];
 
 const ENEMY_TYPES = {
@@ -48,10 +80,13 @@ const ENEMY_TYPES = {
   runner: { radius: 14, hp: 28, speed: 116, damage: 9, score: 15 },
   tank: { radius: 25, hp: 170, speed: 44, damage: 22, score: 35 },
 };
-export function getWaveComposition(wave) {
+const difficultyFor = id => Object.values(DIFFICULTIES).find(difficulty => difficulty.id === id) || DIFFICULTIES.normal;
+export function getWaveComposition(wave, difficultyId = 'normal') {
   const level = clamp(Math.floor(finite(wave, 1)), 1, MAX_WAVES);
-  const regularCount = 5 + level * 3;
-  const tankCount = Math.floor((level - 1) / 2);
+  const difficulty = difficultyFor(difficultyId);
+  const regularCount = Math.max(1, Math.round((5 + level * 3) * difficulty.regularMultiplier));
+  const baseTanks = Math.floor((level - 1) / 2);
+  const tankCount = baseTanks === 0 ? 0 : Math.max(1, Math.round(baseTanks * difficulty.tankMultiplier));
   return { regularCount, tankCount, total: regularCount + tankCount };
 }
 const UNLOCKS = { 1: 'smg', 2: 'shotgun', 3: 'rifle', 5: 'lmg', 7: 'sniper' };
@@ -59,6 +94,8 @@ const TAU = Math.PI * 2;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const distanceSquared = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
 const finite = (v, fallback = 0) => Number.isFinite(v) ? v : fallback;
+const BODY_GAP = .001;
+const TOUCH_MARGIN = .05;
 
 function seededRandom(seed) {
   let state = (Number(seed) >>> 0) || 1;
@@ -150,8 +187,9 @@ export function segmentRoundedRect(ax, ay, bx, by, rect, radius) {
 }
 
 export class Game {
-  constructor({ seed = 1, mapId = 'courtyard' } = {}) {
-    this.map = MAPS.find(map => map.id === mapId) || MAPS[0];
+  constructor({ seed = 1, mapId = 'courtyard', difficultyId = 'normal' } = {}) {
+    this.map = [...MAPS, ...LEGACY_MAPS].find(map => map.id === mapId) || MAPS[0];
+    this.difficulty = difficultyFor(difficultyId);
     this.random = seededRandom(seed);
     this.nextId = 1;
     this.player = {
@@ -177,7 +215,7 @@ export class Game {
     this.status = 'intermission';
     this.score = 0;
     this.kills = 0;
-    this.revivesRemaining = 1;
+    this.revivesRemaining = FREE_REVIVES;
     this.time = 0;
     this.waveKills = 0;
     this.waveTotal = 0;
@@ -198,7 +236,7 @@ export class Game {
     if (this.status !== 'intermission' || this.wave >= MAX_WAVES) return false;
     this.wave += 1;
     this.waveKills = 0;
-    const composition = getWaveComposition(this.wave);
+    const composition = getWaveComposition(this.wave, this.difficulty.id);
     this.waveTotal = composition.total;
     this.status = 'playing';
     this.spawnTimer = 0.25;
@@ -404,23 +442,34 @@ export class Game {
   updateSpawns(dt) {
     this.spawnTimer -= dt;
     if (this.spawnQueue.length === 0 || this.spawnTimer > 0 || this.enemies.length >= 28) return;
-    const type = this.spawnQueue.shift(), def = ENEMY_TYPES[type];
+    const type = this.spawnQueue[0], def = ENEMY_TYPES[type], difficulty = this.difficulty;
     const available = this.map.spawnPoints.filter(point => distanceSquared(point, this.player) > 220 ** 2);
     const points = available.length ? available : this.map.spawnPoints;
-    const point = points[Math.floor(this.random() * points.length)];
-    const hp = Math.round(def.hp * (1 + (this.wave - 1) * 0.045));
+    const first = Math.floor(this.random() * points.length);
+    let point = null;
+    for (let offset = 0; offset < points.length && !point; offset++) {
+      const station = points[(first + offset) % points.length];
+      point = this.findFreeEntityPoint(station.x, station.y, def.radius);
+    }
+    if (!point) {
+      // A crowded entrance retries later; never consume a queued enemy or stack bodies.
+      this.spawnTimer = .1;
+      return;
+    }
+    this.spawnQueue.shift();
+    const hp = Math.round(def.hp * (1 + (this.wave - 1) * 0.045) * difficulty.hpMultiplier);
     const enemy = { id: this.nextId++, x: point.x, y: point.y, type, radius: def.radius,
-      hp, maxHp: hp, speed: def.speed * (1 + (this.wave - 1) * 0.025),
-      damage: def.damage, angle: 0, hitFlash: 0 };
+      hp, maxHp: hp, speed: def.speed * (1 + (this.wave - 1) * 0.025) * difficulty.speedMultiplier,
+      damage: def.damage * difficulty.damageMultiplier, angle: 0, hitFlash: 0 };
     if (type === 'tank') {
-      enemy.rangedCooldown = BOSS_ATTACK.interval - BOSS_ATTACK.windup;
+      enemy.rangedCooldown = difficulty.bossInterval - difficulty.bossWindup;
       enemy.rangedCharge = 0;
-      enemy.rangedWindup = BOSS_ATTACK.windup;
+      enemy.rangedWindup = difficulty.bossWindup;
       enemy.attackAngle = 0;
       this.events.push({ type: 'bossSpawn', wave: this.wave });
     }
     this.enemies.push(enemy);
-    this.spawnTimer += Math.max(0.24, 0.7 - this.wave * 0.036);
+    this.spawnTimer += Math.max(0.24, 0.7 - this.wave * 0.036) * difficulty.spawnIntervalMultiplier;
   }
 
   isBodyFree(x, y, radius) {
@@ -429,6 +478,28 @@ export class Game {
       const nearX = clamp(x, rect.x, rect.x + rect.w), nearY = clamp(y, rect.y, rect.y + rect.h);
       return (x - nearX) ** 2 + (y - nearY) ** 2 < radius ** 2;
     });
+  }
+
+  bodyPeers(body) {
+    const peers = this.enemies.filter(enemy => enemy !== body && enemy.hp > 0);
+    if (body !== this.player && this.player.hp > 0) peers.push(this.player);
+    return peers;
+  }
+
+  isEntityFree(x, y, radius, body = null) {
+    return this.isBodyFree(x, y, radius) && this.bodyPeers(body)
+      .every(other => (x - other.x) ** 2 + (y - other.y) ** 2 >= (radius + other.radius + BODY_GAP) ** 2);
+  }
+
+  findFreeEntityPoint(x, y, radius) {
+    if (this.isEntityFree(x, y, radius)) return { x, y };
+    // Search close to this entrance so a packed spawn does not teleport to the player.
+    for (let ring = 36; ring <= 144; ring += 36) for (let index = 0; index < 16; index++) {
+      const angle = index / 16 * TAU;
+      const px = x + Math.cos(angle) * ring, py = y + Math.sin(angle) * ring;
+      if (this.isEntityFree(px, py, radius)) return { x: px, y: py };
+    }
+    return null;
   }
 
   syncSpeedZone() {
@@ -479,14 +550,38 @@ export class Game {
   }
 
   moveBody(body, dx, dy) {
-    // Resolve each axis so movement slides along walls. Substeps prevent tunnelling.
+    // Bodies slide along walls and stop at other circles. Sweeps also cover fast frames.
+    // Only the moving body changes position; crowds never push or teleport the player.
     const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 8));
     for (let i = 0; i < steps; i++) {
-      const x = clamp(body.x + dx / steps, body.radius, this.map.width - body.radius);
-      if (this.isBodyFree(x, body.y, body.radius)) body.x = x;
-      const y = clamp(body.y + dy / steps, body.radius, this.map.height - body.radius);
-      if (this.isBodyFree(body.x, y, body.radius)) body.y = y;
+      this.moveBodyAxis(body, dx / steps, 0);
+      this.moveBodyAxis(body, 0, dy / steps);
     }
+  }
+
+  moveBodyAxis(body, dx, dy) {
+    const nx = clamp(body.x + dx, body.radius, this.map.width - body.radius);
+    const ny = clamp(body.y + dy, body.radius, this.map.height - body.radius);
+    const vx = nx - body.x, vy = ny - body.y, distance = Math.hypot(vx, vy);
+    if (distance < 1e-9) return;
+    let fraction = 1;
+    for (const rect of this.map.obstacles) {
+      const hit = segmentRoundedRect(body.x, body.y, nx, ny, rect, body.radius);
+      if (hit !== null) fraction = Math.min(fraction, Math.max(0, hit - .00001 / distance));
+    }
+    for (const other of this.bodyPeers(body)) {
+      const radius = body.radius + other.radius + BODY_GAP;
+      const ox = body.x - other.x, oy = body.y - other.y;
+      if (ox * ox + oy * oy < radius * radius) {
+        // Legacy/manual overlap may leave in an outward direction, never penetrate further.
+        if (ox * vx + oy * vy < -1e-9 || (nx - other.x) ** 2 + (ny - other.y) ** 2 < ox * ox + oy * oy) fraction = 0;
+        continue;
+      }
+      const hit = segmentCircleInterior(body.x, body.y, nx, ny, other.x, other.y, radius);
+      if (hit !== null) fraction = Math.min(fraction, Math.max(0, hit - .00001 / distance));
+    }
+    const x = body.x + vx * fraction, y = body.y + vy * fraction;
+    if (this.isBodyFree(x, y, body.radius)) { body.x = x; body.y = y; }
   }
 
   clearPath(ax, ay, bx, by, radius) {
@@ -546,6 +641,10 @@ export class Game {
   }
 
   updateEnemies(dt) {
+    const touching = enemy => enemy.hp > 0
+      && distanceSquared(enemy, this.player) <= (enemy.radius + this.player.radius + TOUCH_MARGIN) ** 2;
+    // Remember existing contact before repairing legacy/manual overlaps.
+    const priorContact = this.enemies.find(touching);
     this.navigationTimer -= dt;
     if (this.navigationTimer <= 0) { this.flowFields.clear(); this.navigationTimer = 0.4; }
     for (const enemy of this.enemies) {
@@ -560,41 +659,62 @@ export class Game {
       if (length > 1) { dx /= length; dy /= length; } else { dx = 0; dy = 0; }
       this.moveBody(enemy, dx * enemy.speed * dt, dy * enemy.speed * dt);
     }
-    // Soft separation reduces visual stacking; enemies never become solid player walls.
-    for (let i = 0; i < this.enemies.length; i++) for (let j = i + 1; j < this.enemies.length; j++) {
-      const a = this.enemies[i], b = this.enemies[j];
-      if (a.hp <= 0 || b.hp <= 0) continue;
-      let dx = a.x - b.x, dy = a.y - b.y, d = Math.hypot(dx, dy);
-      const min = (a.radius + b.radius) * 0.82;
-      if (d >= min) continue;
-      if (d < 0.01) { dx = (a.id % 2 ? 1 : -1); dy = 0.5; d = Math.hypot(dx, dy); }
-      const push = Math.min(2.5, (min - d) * 0.2);
-      if (!(a.rangedCharge > 0)) this.moveBody(a, dx / d * push, dy / d * push);
-      if (!(b.rangedCharge > 0)) this.moveBody(b, -dx / d * push, -dy / d * push);
-    }
+    this.separateEnemyBodies();
     if (this.player.invulnerability <= 0) {
       // At most one touch hit per grace interval, independent of crowd size.
-      const contact = this.enemies.find(enemy => enemy.hp > 0 && distanceSquared(enemy, this.player) < (enemy.radius + this.player.radius - 2) ** 2);
+      const contact = priorContact || this.enemies.find(touching);
       if (contact) this.damagePlayer(contact.damage);
+    }
+  }
+
+  separateEnemyBodies() {
+    // Swept movement and free spawns prevent overlap during ordinary play. Repair older
+    // states gently, with a four-pixel budget per enemy and no positional player push.
+    const budgets = new Map(this.enemies.map(enemy => [enemy, 4]));
+    const correct = (enemy, dx, dy) => {
+      const distance = Math.hypot(dx, dy), budget = budgets.get(enemy);
+      if (distance < 1e-9 || budget <= 0) return;
+      const length = Math.min(distance, budget);
+      const before = { x: enemy.x, y: enemy.y };
+      this.moveBody(enemy, dx / distance * length, dy / distance * length);
+      budgets.set(enemy, budget - Math.hypot(enemy.x - before.x, enemy.y - before.y));
+    };
+    const separate = (a, b, share) => {
+      const minimum = a.radius + b.radius + BODY_GAP;
+      let dx = a.x - b.x, dy = a.y - b.y, distance = Math.hypot(dx, dy);
+      if (distance >= minimum) return;
+      if (distance < 1e-9) {
+        const angle = (a.id || 1) * 2.399963229728653;
+        dx = Math.cos(angle); dy = Math.sin(angle); distance = 1;
+      } else { dx /= distance; dy /= distance; }
+      const correction = minimum - Math.hypot(a.x - b.x, a.y - b.y);
+      correct(a, dx * correction * (share ? .5 : 1), dy * correction * (share ? .5 : 1));
+      if (share) correct(b, -dx * correction * .5, -dy * correction * .5);
+    };
+    for (const enemy of this.enemies) if (enemy.hp > 0) separate(enemy, this.player, false);
+    for (let i = 0; i < this.enemies.length; i++) for (let j = i + 1; j < this.enemies.length; j++) {
+      const a = this.enemies[i], b = this.enemies[j];
+      if (a.hp > 0 && b.hp > 0) separate(a, b, true);
     }
   }
 
   updateRangedAttack(enemy, dt) {
     if (enemy.type !== 'tank' || enemy.hp <= 0) return false;
+    const difficulty = this.difficulty;
     if (enemy.rangedCharge > 0) {
       const remaining = enemy.rangedCharge - dt;
       enemy.rangedCharge = Math.max(0, remaining);
       if (remaining <= 0) {
         this.fireBossVolley(enemy);
-        enemy.rangedCooldown = BOSS_ATTACK.interval - BOSS_ATTACK.windup + remaining;
+        enemy.rangedCooldown = difficulty.bossInterval - difficulty.bossWindup + remaining;
       }
       return true;
     }
-    enemy.rangedCooldown = finite(enemy.rangedCooldown, BOSS_ATTACK.interval - BOSS_ATTACK.windup) - dt;
+    enemy.rangedCooldown = finite(enemy.rangedCooldown, difficulty.bossInterval - difficulty.bossWindup) - dt;
     if (enemy.rangedCooldown <= 0) {
       enemy.attackAngle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
-      enemy.rangedWindup = BOSS_ATTACK.windup;
-      enemy.rangedCharge = BOSS_ATTACK.windup + enemy.rangedCooldown;
+      enemy.rangedWindup = difficulty.bossWindup;
+      enemy.rangedCharge = difficulty.bossWindup + enemy.rangedCooldown;
       enemy.rangedCooldown = 0;
       this.events.push({ type: 'bossCharge', enemyId: enemy.id });
       return true;
@@ -603,12 +723,14 @@ export class Game {
   }
 
   fireBossVolley(enemy) {
+    const difficulty = this.difficulty;
+    const speed = BOSS_ATTACK.bulletSpeed * difficulty.bossBulletSpeedMultiplier;
     for (const spread of [-BOSS_ATTACK.spread, 0, BOSS_ATTACK.spread]) {
       const angle = enemy.attackAngle + spread;
       // Starting at the body center means a close wall cannot be bypassed by the muzzle.
       this.bullets.push({ id: this.nextId++, x: enemy.x, y: enemy.y, prevX: enemy.x, prevY: enemy.y,
-        radius: BOSS_ATTACK.radius, vx: Math.cos(angle) * BOSS_ATTACK.bulletSpeed, vy: Math.sin(angle) * BOSS_ATTACK.bulletSpeed,
-        damage: BOSS_ATTACK.damage, remainingHits: 1, hitIds: new Set(), owner: 'enemy', weapon: 'bossOrb', life: BOSS_ATTACK.life });
+        radius: BOSS_ATTACK.radius, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+        damage: BOSS_ATTACK.damage * difficulty.damageMultiplier, remainingHits: 1, hitIds: new Set(), owner: 'enemy', weapon: 'bossOrb', life: BOSS_ATTACK.life });
     }
     this.events.push({ type: 'bossVolley', enemyId: enemy.id });
   }

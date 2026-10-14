@@ -6,6 +6,7 @@ const ink = '#243c48';
 const themes = {
   courtyard: { floor: '#a9d6cc', tile: '#9bcac0', edge: '#75a99f', cover: '#e7b67b', front: '#bb865b', detail: '#f5d6a8', moss: '#8ac1ab' },
   greenhouse: { floor: '#cedddf', tile: '#bdced1', edge: '#75939e', cover: '#769baa', front: '#4c6f80', detail: '#cde7e8', moss: '#b5c9cc' },
+  candyloop: { floor: '#e6d7ed', tile: '#d4bde0', edge: '#b38bc5', cover: '#ffdbb4', front: '#c885a4', detail: '#fff7dc', moss: '#ceaad8' },
 };
 const colors = { grunt: '#a6d884', runner: '#ffb965', tank: '#bba0dc' };
 const marks = { pistol: 'P', smg: 'S', shotgun: 'B', rifle: 'R', lmg: 'M', sniper: 'N' };
@@ -91,12 +92,40 @@ export function drawEgg(ctx, x, y, {
   ctx.restore();
 }
 
-function obstacle(ctx, o, palette, index, factory = false) {
+function star(ctx, x, y, radius, fill, stroke) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = i * Math.PI / 5 - Math.PI / 2, r = i % 2 ? radius * .45 : radius;
+    const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r;
+    if (!i) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); }
+}
+
+function obstacle(ctx, o, palette, index, factory = false, candy = false) {
   const x = num(o.x), y = num(o.y), w = num(o.w, num(o.width, 80)), h = num(o.h, num(o.height, 80));
   ctx.fillStyle = '#24424b24'; roundRect(ctx, x + 5, y + 8, w, h + 5, 9); ctx.fill();
   ctx.fillStyle = palette.front; roundRect(ctx, x, y, w, h + 8, 8); ctx.fill();
   ctx.fillStyle = palette.cover; roundRect(ctx, x, y - 6, w, h, 8); ctx.fill();
   ctx.strokeStyle = '#35534a45'; ctx.lineWidth = 2; ctx.stroke();
+  if (candy) {
+    ctx.save(); roundRect(ctx, x + 6, y, w - 12, h - 12, 6); ctx.clip();
+    ctx.strokeStyle = '#efa6b3'; ctx.lineWidth = 10;
+    ctx.beginPath();
+    for (let p = -h; p < w + h; p += 42) { ctx.moveTo(x + p, y); ctx.lineTo(x + p + h, y + h); }
+    ctx.stroke(); ctx.restore();
+    ctx.strokeStyle = '#fff6e2'; ctx.lineWidth = 4;
+    roundRect(ctx, x + 7, y + 1, w - 14, h - 16, 5); ctx.stroke();
+    if (w > 150 && h > 120) {
+      ctx.fillStyle = '#b782bc'; roundRect(ctx, x + w / 2 - 57, y + h / 2 - 52, 114, 96, 22); ctx.fill();
+      ctx.fillStyle = '#fff1cb'; roundRect(ctx, x + w / 2 - 53, y + h / 2 - 58, 106, 90, 22); ctx.fill();
+      star(ctx, x + w / 2, y + h / 2 - 18, 28, '#f4b978', '#bc789c');
+      ctx.fillStyle = '#734565'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('星糖岛', x + w / 2, y + h / 2 + 18);
+    }
+    return;
+  }
   if (factory) {
     ctx.save();
     ctx.fillStyle = '#e7f2e9'; roundRect(ctx, x + 8, y + 2, w - 16, 10, 3); ctx.fill();
@@ -105,9 +134,9 @@ function obstacle(ctx, o, palette, index, factory = false) {
     circle(ctx, x + w - 17, y + 25, 6, '#a3e9c6', '#426775', 2);
     circle(ctx, x + w - 17, y + 25, 2, '#edfff0');
     if (w > 100 && h > 50) {
-      ctx.fillStyle = '#476d7c'; roundRect(ctx, x + w / 2 - 23, y + h / 2 - 17, 46, 27, 5); ctx.fill();
-      ctx.fillStyle = '#c9eee5'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(`汽泡 ${String(index + 1).padStart(2, '0')}`, x + w / 2, y + h / 2 - 3);
+      ctx.fillStyle = '#335866'; roundRect(ctx, x + w / 2 - 27, y + h / 2 - 17, 54, 28, 5); ctx.fill();
+      ctx.fillStyle = '#effff6'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('汽泡', x + w / 2, y + h / 2 - 3);
     }
     ctx.restore(); return;
   }
@@ -116,10 +145,28 @@ function obstacle(ctx, o, palette, index, factory = false) {
   ctx.strokeStyle = '#35534a25'; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.moveTo(x + 12, y + h - 16); ctx.lineTo(x + w - 12, y + 10);
   ctx.moveTo(x + 12, y + 10); ctx.lineTo(x + w - 12, y + h - 16); ctx.stroke();
-  if (w > 90) {
-    ctx.fillStyle = '#fff4d933'; roundRect(ctx, x + w / 2 - 14, y + h / 2 - 14, 28, 18, 3); ctx.fill();
-    ctx.fillStyle = '#35534a75'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(String(index + 1).padStart(2, '0'), x + w / 2, y + h / 2 - 2);
+}
+
+function candyFloor(ctx, map, t) {
+  const w = num(map.width, 1280), h = num(map.height, 760);
+  ctx.save();
+  // Painted rings and floor stars are flat decorations; only the striped
+  // raised islands collide. The inner loop has two routes around the island.
+  ctx.strokeStyle = '#f6ecfa'; ctx.lineWidth = 68; ctx.lineJoin = 'round';
+  roundRect(ctx, 118, 76, w - 236, h - 152, 80); ctx.stroke();
+  roundRect(ctx, 440, 230, 400, 280, 58); ctx.stroke();
+  ctx.strokeStyle = '#cda9d7'; ctx.lineWidth = 3; ctx.setLineDash([8, 18]);
+  roundRect(ctx, 118, 76, w - 236, h - 152, 80); ctx.stroke();
+  roundRect(ctx, 440, 230, 400, 280, 58); ctx.stroke(); ctx.setLineDash([]);
+  for (const point of map.spawnPoints || []) {
+    circle(ctx, point.x, point.y, 35, '#d3b4df', '#a875bd', 3);
+    star(ctx, point.x, point.y, 20, '#fff0be', '#b688ad');
   }
+  for (const [x, y] of [[380, 80], [900, 80], [150, 380], [1130, 380], [380, 680], [900, 680], [640, 230], [640, 510]]) {
+    star(ctx, x, y, 10, '#d0afd9');
+  }
+  for (const zone of map.speedZones || []) speedZone(ctx, zone, t, true);
+  ctx.restore();
 }
 
 function workshopFloor(ctx, map, t) {
@@ -143,7 +190,7 @@ function workshopFloor(ctx, map, t) {
       ctx.moveTo(num(point.x) - 15, num(point.y) + j * 8); ctx.lineTo(num(point.x) + 15, num(point.y) + j * 8); ctx.stroke();
     }
     if (i < 2) {
-      ctx.fillStyle = '#617e87'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = '#365766'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center';
       ctx.fillText('出货口', num(point.x), num(point.y) + 55);
     }
   }
@@ -151,11 +198,11 @@ function workshopFloor(ctx, map, t) {
   ctx.restore();
 }
 
-function speedZone(ctx, zone, t) {
+function speedZone(ctx, zone, t, candy = false) {
   const x = num(zone.x), y = num(zone.y), w = num(zone.w), h = num(zone.h), vertical = h > w;
   ctx.save(); roundRect(ctx, x, y, w, h, 12); ctx.clip();
-  ctx.fillStyle = '#53b8b2'; ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = '#256f7980'; ctx.lineWidth = 3;
+  ctx.fillStyle = candy ? '#b690d1' : '#53b8b2'; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = candy ? '#8054a480' : '#256f7980'; ctx.lineWidth = 3;
   const length = vertical ? h : w, offset = (t * 48) % 34;
   ctx.beginPath();
   for (let p = -34 + offset; p < length + 34; p += 34) {
@@ -163,8 +210,8 @@ function speedZone(ctx, zone, t) {
     else { ctx.moveTo(x + p, y); ctx.lineTo(x + p, y + h); }
   }
   ctx.stroke();
-  ctx.fillStyle = '#b6f3d135'; ctx.fillRect(x + 7, y + 7, w - 14, h - 14);
-  ctx.strokeStyle = '#e6fff0'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+  ctx.fillStyle = candy ? '#ffe8bd25' : '#b6f3d135'; ctx.fillRect(x + 7, y + 7, w - 14, h - 14);
+  ctx.strokeStyle = candy ? '#fff0bc' : '#e6fff0'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
   ctx.beginPath();
   const count = Math.floor((length - 45) / 48);
   for (let i = 0; i < count; i++) {
@@ -174,9 +221,9 @@ function speedZone(ctx, zone, t) {
   }
   ctx.stroke();
   ctx.restore();
-  ctx.strokeStyle = '#e8f6d5'; ctx.lineWidth = 3; roundRect(ctx, x, y, w, h, 12); ctx.stroke();
-  ctx.fillStyle = '#1f5964'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(vertical ? '加速带' : '加速带 ×1.45', x + w / 2, y + 16);
+  ctx.strokeStyle = candy ? '#fff0c0' : '#e8f6d5'; ctx.lineWidth = 3; roundRect(ctx, x, y, w, h, 12); ctx.stroke();
+  ctx.fillStyle = candy ? '#45265f' : '#174b54'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(candy ? '加速 ×1.45' : vertical ? '加速带' : '加速带 ×1.45', x + w / 2, y + 16);
 }
 
 function barrelPad(ctx, barrel, t) {
@@ -187,8 +234,8 @@ function barrelPad(ctx, barrel, t) {
   circle(ctx, x, y + 2, 24, null, ctx.strokeStyle, 2); ctx.restore();
   if (!active) {
     const remaining = Math.max(0, Math.ceil(num(barrel.respawnRemaining)));
-    circle(ctx, x, y + 2, 14 + Math.sin(t * 2) * .6, '#d7e4dc');
-    ctx.fillStyle = '#54707c'; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    circle(ctx, x, y + 2, 19 + Math.sin(t * 2) * .6, '#e2eee6');
+    ctx.fillStyle = '#294957'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(`${remaining}s`, x, y + 2);
   }
   ctx.restore();
@@ -244,8 +291,8 @@ function pickup(ctx, p, t) {
   circle(ctx, 0, 0, 20, '#fff5df', shade, 3);
   pickupIcon(ctx, p.type, p.weaponId);
   if (p.type === 'weapon') {
-    circle(ctx, 15, 16, 8, ink); ctx.fillStyle = '#fff1ca'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = 'bold 9px sans-serif'; ctx.fillText(marks[p.weaponId] || 'W', 15, 16);
+    circle(ctx, 17, 18, 12, ink); ctx.fillStyle = '#fff1ca'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 16px sans-serif'; ctx.fillText(marks[p.weaponId] || 'W', 17, 18);
   }
   ctx.restore();
 }
@@ -345,16 +392,16 @@ function reloadIndicator(ctx, player, map) {
   const weapon = WEAPONS[player.currentWeapon], ammo = player.weapons?.[player.currentWeapon];
   if (!weapon || !ammo || ammo.reloadRemaining <= 0) return;
   const progress = Math.max(0, Math.min(1, 1 - ammo.reloadRemaining / weapon.reloadTime));
-  const x = Math.max(38, Math.min(num(map.width, 1280) - 38, num(player.x)));
-  const y = Math.max(17, num(player.y) - num(player.radius, 20) - 34);
+  const x = Math.max(46, Math.min(num(map.width, 1280) - 46, num(player.x)));
+  const y = Math.max(20, num(player.y) - num(player.radius, 20) - 36);
   ctx.save();
-  ctx.fillStyle = '#243c48ed'; roundRect(ctx, x - 36, y - 13, 72, 26, 13); ctx.fill();
+  ctx.fillStyle = '#243c48'; roundRect(ctx, x - 42, y - 16, 84, 32, 16); ctx.fill();
   ctx.strokeStyle = '#fff0cd75'; ctx.lineWidth = 1.5; ctx.stroke();
   circle(ctx, x - 22, y, 8, null, '#90a39f', 2);
   ctx.strokeStyle = '#f8df8e'; ctx.lineWidth = 3; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.arc(x - 22, y, 8, -Math.PI / 2, -Math.PI / 2 + TAU * progress); ctx.stroke();
   ctx.fillStyle = '#fff1ca'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.font = 'bold 12px sans-serif'; ctx.fillText('换弹', x + 9, y);
+  ctx.font = 'bold 16px sans-serif'; ctx.fillText('换弹', x + 12, y);
   ctx.restore();
 }
 
@@ -393,12 +440,13 @@ function reviveProtection(ctx, player, map, t, foreground = false) {
     ctx.strokeStyle = '#83dcec'; ctx.lineWidth = 4; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.arc(x, y, radius * pulse + 4, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(1, remaining / 3)); ctx.stroke();
   } else {
-    const bx = Math.max(43, Math.min(num(map.width, 1280) - 43, x));
+    const bx = Math.max(65, Math.min(num(map.width, 1280) - 65, x));
     const ammo = player.weapons?.[player.currentWeapon];
-    const by = Math.max(16, y - num(player.radius, 18) - (ammo?.reloadRemaining > 0 ? 66 : 35));
-    ctx.fillStyle = '#244b5deb'; roundRect(ctx, bx - 41, by - 12, 82, 24, 12); ctx.fill();
+    const reloadY = Math.max(20, y - num(player.radius, 18) - 36);
+    const by = ammo?.reloadRemaining > 0 ? (reloadY >= 58 ? reloadY - 38 : reloadY + 38) : reloadY;
+    ctx.fillStyle = '#244b5d'; roundRect(ctx, bx - 63, by - 16, 126, 32, 16); ctx.fill();
     ctx.strokeStyle = '#b7f2f4'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.fillStyle = '#e8ffff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#e8ffff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(`复活保护 ${Math.ceil(remaining)}s`, bx, by);
   }
   ctx.restore();
@@ -411,6 +459,7 @@ export function drawArena(ctx, game, bounds = {}) {
   const map = game.map || {}, w = num(map.width, 1280), h = num(map.height, 760), t = num(time) * .001;
   const palette = themes[map.id] || themes[map.theme] || themes.courtyard;
   const factory = map.id === 'greenhouse' || map.theme === 'factory';
+  const candy = map.id === 'candyloop' || map.theme === 'candy';
   ctx.save();
   if (camera) {
     const scale = Math.max(.001, num(bounds.scale, 1)), x = num(bounds.x), y = num(bounds.y);
@@ -422,11 +471,15 @@ export function drawArena(ctx, game, bounds = {}) {
   ctx.save(); roundRect(ctx, 0, 0, w, h, 20); ctx.clip();
   ctx.strokeStyle = palette.tile; ctx.lineWidth = 1;
   ctx.beginPath();
-  for (let x = 0; x < w; x += 80) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
-  for (let y = 0; y < h; y += 80) { ctx.moveTo(0, y); ctx.lineTo(w, y); } ctx.stroke();
+  if (!candy) {
+    for (let x = 0; x < w; x += 80) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+    for (let y = 0; y < h; y += 80) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+  }
+  ctx.stroke();
   const light = ctx.createRadialGradient(w * .4, h * .3, 0, w * .5, h * .5, w * .7);
   light.addColorStop(0, '#ffffff15'); light.addColorStop(1, '#243c4815'); ctx.fillStyle = light; ctx.fillRect(0, 0, w, h);
   if (factory) workshopFloor(ctx, map, t);
+  else if (candy) candyFloor(ctx, map, t);
   else {
     // Sparse garden floor decals communicate scale without obscuring bullets.
     ctx.fillStyle = palette.moss;
@@ -445,7 +498,7 @@ export function drawArena(ctx, game, bounds = {}) {
   for (const b of game.barrels || []) barrelPad(ctx, b, t);
   for (const p of game.pickups || []) pickup(ctx, p, t);
   for (const enemy of game.enemies || []) rangedWarning(ctx, enemy, map, t);
-  for (const [i, o] of (map.obstacles || []).entries()) obstacle(ctx, o, palette, i, factory);
+  for (const [i, o] of (map.obstacles || []).entries()) obstacle(ctx, o, palette, i, factory, candy);
   const player = game.player;
   if (player) speedIndicator(ctx, player, t);
   if (player) reviveProtection(ctx, player, map, t);
@@ -466,7 +519,8 @@ export function drawArena(ctx, game, bounds = {}) {
       ctx.fillStyle = '#243c487a'; roundRect(ctx, num(actor.x) - width / 2, top, width, height, 2); ctx.fill();
       if (ratio > 0) { ctx.fillStyle = boss ? '#ffaf83' : '#fff2cb'; roundRect(ctx, num(actor.x) - width / 2, top, width * ratio, height, 2); ctx.fill(); }
       if (boss) {
-        ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('重甲 BOSS', num(actor.x), top - 5);
+        ctx.fillStyle = '#fff0d9'; roundRect(ctx, num(actor.x) - 49, top - 31, 98, 24, 8); ctx.fill();
+        ctx.fillStyle = '#513451'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 16px sans-serif'; ctx.fillText('重甲 BOSS', num(actor.x), top - 19);
       }
     }
   }

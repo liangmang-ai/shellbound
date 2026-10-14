@@ -6,6 +6,66 @@ import { chromium } from 'playwright';
 const port = Number(process.env.SMOKE_PORT || 5198);
 const server = spawn(process.execPath, ['scripts/serve.mjs'], { env: { ...process.env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
 let browser;
+// Observe actual Canvas font metrics without changing app input or simulation.
+const observeText = async page => page.addInitScript(() => {
+  const original = CanvasRenderingContext2D.prototype.fillText;
+  window.__shellboundTextDraws = [];
+  CanvasRenderingContext2D.prototype.fillText = function(value, x, y, maxWidth) {
+    if (this.font.includes('PingFang SC')) {
+      const metric = this.measureText(String(value)), matrix = this.getTransform(), rect = this.canvas.getBoundingClientRect();
+      const corners = [[x - metric.actualBoundingBoxLeft, y - metric.actualBoundingBoxAscent],
+        [x + metric.actualBoundingBoxRight, y + metric.actualBoundingBoxDescent]];
+      const points = corners.map(([px, py]) => ({
+        x: rect.x + (matrix.a * px + matrix.c * py + matrix.e) * rect.width / this.canvas.width,
+        y: rect.y + (matrix.b * px + matrix.d * py + matrix.f) * rect.height / this.canvas.height,
+      }));
+      window.__shellboundTextDraws.push({ value: String(value), font: this.font,
+        left: Math.min(...points.map(point => point.x)), right: Math.max(...points.map(point => point.x)),
+        top: Math.min(...points.map(point => point.y)), bottom: Math.max(...points.map(point => point.y)) });
+      if (window.__shellboundTextDraws.length > 500) window.__shellboundTextDraws.shift();
+    }
+    return original.call(this, value, x, y, ...(maxWidth === undefined ? [] : [maxWidth]));
+  };
+});
+const checkVisibleText = async (page, state, { menu = false } = {}) => {
+  const viewport = page.viewportSize();
+  const draws = await page.evaluate(() => window.__shellboundTextDraws);
+  const isHudText = value => /^(生命 |盾牌 |备用 |剩余 |加速 ×)/.test(value) || / · 第 /.test(value)
+    || ['打开武器库 ▾', '收起武器库 ▴', '辅助瞄准', '移动瞄准', '手动瞄准', 'Ⅱ 暂停', '开火', '换弹', '切枪'].includes(value)
+    || /^手雷 \d+$/.test(value);
+  const unique = [...new Map(draws.filter(draw => menu ? /[\u4e00-\u9fff]/.test(draw.value)
+    : isHudText(draw.value))
+    .map(draw => [`${draw.value}:${draw.left}:${draw.top}`, draw])).values()];
+  assert.ok(unique.length > 0, 'actual Chinese Canvas text was observed');
+  for (const draw of unique) {
+    assert.ok(draw.left >= -1 && draw.right <= viewport.width + 1 && draw.top >= -1 && draw.bottom <= viewport.height + 1,
+      `Canvas text remains visible at ${viewport.width}×${viewport.height}: ${draw.value}`);
+  }
+  if (menu) {
+    for (let i = 0; i < unique.length; i++) for (let j = i + 1; j < unique.length; j++) {
+      const a = unique[i], b = unique[j];
+      assert.ok(a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1,
+        `Menu text does not overlap at ${viewport.width}×${viewport.height}: ${a.value} / ${b.value}`);
+    }
+    for (const label of ['休闲', '标准', '挑战']) {
+      const difficulty = state.buttons.find(button => button.label === label);
+      assert.ok(difficulty && difficulty.w * state.layout.scale >= 44 && difficulty.h * state.layout.scale >= 44,
+        `${label} difficulty has a usable touch target`);
+    }
+  }
+  if (state.weaponPicker) {
+    const names = ['手枪', '冲锋枪', '步枪', '机枪', '大狙', '霰弹枪'];
+    const labels = ['啵啵手枪', '跳豆冲锋枪', '薄荷步枪', '爆米花机枪', '星光大狙', '脆壳霰弹枪'];
+    for (let i = 0; i < names.length; i++) {
+      const draw = draws.findLast(item => item.value === names[i]);
+      const card = state.buttons.find(button => button.label === labels[i]);
+      const { ox, oy, scale } = state.layout;
+      assert.ok(draw && draw.left >= ox + card.x * scale && draw.right <= ox + (card.x + card.w) * scale
+        && draw.top >= oy + card.y * scale && draw.bottom <= oy + (card.y + card.h) * scale,
+      `Actual weapon caption fits its card: ${names[i]}`);
+    }
+  }
+};
 try {
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Preview server startup timeout')), 5000);
@@ -16,6 +76,7 @@ try {
   });
   browser = await chromium.launch({ channel: 'chrome', headless: true });
   const page = await browser.newPage({ viewport: { width: 1360, height: 880 }, deviceScaleFactor: 1 });
+  await observeText(page);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
@@ -28,7 +89,7 @@ try {
     assert.ok(picker.w * state.layout.scale >= 44 && picker.h * state.layout.scale >= 44, 'Weapon picker has a usable touch area');
     assert.equal(state.weaponPicker, false, 'Weapon choices stay collapsed during combat');
     const pause = state.buttons.find(button => button.label.includes('暂停'));
-    assert.ok(picker.x + picker.w <= state.layout.w / 2 - 110 && state.layout.w / 2 + 110 <= pause.x,
+    assert.ok(picker.x + picker.w <= state.layout.w / 2 - 124 && state.layout.w / 2 + 124 <= pause.x,
       'Weapon stats, central wave HUD, and pause remain separated across landscape aspect ratios');
     const circles = ['move', 'fire', 'reload', 'grenade', 'weapon'].map(role => ({ role, ...state.controls[role] }));
     for (const circle of circles) {
@@ -48,7 +109,7 @@ try {
     for (const card of cards) {
       assert.ok(card.w * state.layout.scale >= 44 && card.h * state.layout.scale >= 44, 'Each weapon choice has a usable touch area');
       assert.ok(card.x >= 0 && card.y >= 0 && card.x + card.w <= state.layout.w && card.y + card.h <= state.layout.h, 'Weapon choices remain on screen');
-      assert.ok(card.y + card.h <= 330, 'Weapon choices remain grouped above the movement control');
+      assert.ok(card.y + card.h < state.controls.move.y - state.controls.move.r, 'Weapon choices remain grouped above the movement control');
     }
     for (let i = 0; i < cards.length; i++) for (let j = i + 1; j < cards.length; j++) {
       const a = cards[i], b = cards[j];
@@ -65,18 +126,36 @@ try {
     await page.waitForTimeout(80);
   };
   await mkdir('artifacts', { recursive: true });
+  let state = await snapshot();
+  assert.equal(state.selectedMap, 'greenhouse', 'The workshop is the default first map');
+  assert.equal(state.selectedDifficulty, 'easy', 'The first run defaults to accessible difficulty');
+  const workshopChoice = state.buttons.find(button => button.label === '汽泡工坊');
+  const corridorChoice = state.buttons.find(button => button.label === '星糖回廊');
+  assert.ok(workshopChoice.y < corridorChoice.y, 'The creative map follows the workshop');
+  assert.equal(state.buttons.some(button => button.label === '薄荷庭院'), false);
+  await checkVisibleText(page, state, { menu: true });
+  await clickLabel('挑战');
+  assert.equal((await snapshot()).selectedDifficulty, 'hard');
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForFunction(() => window.__shellbound?.getSnapshot().buttons.length > 0);
+  assert.equal((await snapshot()).selectedDifficulty, 'hard', 'Difficulty selection survives a browser reload');
+  await clickLabel('休闲');
   await page.screenshot({ path: 'artifacts/menu.png' });
   await clickLabel('操作指南'); assert.equal((await snapshot()).help, true);
   await clickLabel('准备好了');
   await clickLabel('汽泡工坊'); assert.equal((await snapshot()).selectedMap, 'greenhouse');
   await clickLabel('开始突围');
-  let state = await snapshot(); assert.equal(state.screen, 'game'); assert.equal(state.game.mapId, 'greenhouse');
+  state = await snapshot(); assert.equal(state.screen, 'game'); assert.equal(state.game.mapId, 'greenhouse');
+  assert.equal(state.game.difficultyId, 'easy');
+  assert.equal(state.game.revivesRemaining, 3);
   assert.equal(state.game.environment.barrels.length, 4);
   assert.equal(state.game.environment.speedZones.length, 2);
   assert.equal(state.settings.aimAssist, true);
   checkCombatLayout(state);
+  await checkVisibleText(page, state);
   await clickLabel('切换武器');
   checkWeaponPicker(await snapshot());
+  await checkVisibleText(page, await snapshot());
   await clickLabel('收起');
   checkCombatLayout(await snapshot());
   const initialX = state.game.player.x;
@@ -119,9 +198,25 @@ try {
   assert.equal((await snapshot()).game.environment.speedMultiplier, 1.45);
   await page.screenshot({ path: 'artifacts/workshop-speed.png' });
   await page.keyboard.press('Escape'); await clickLabel('返回战区'); assert.equal((await snapshot()).screen, 'menu');
+  await clickLabel('星糖回廊');
+  await clickLabel('标准');
+  await clickLabel('开始突围');
+  state = await snapshot();
+  assert.equal(state.game.mapId, 'candyloop');
+  assert.equal(state.game.difficultyId, 'normal');
+  assert.equal(state.game.environment.speedZones.length, 2);
+  await page.screenshot({ path: 'artifacts/candy-corridor.png' });
+  await page.keyboard.press('Escape'); await clickLabel('重新开始');
+  state = await snapshot();
+  assert.equal(state.game.mapId, 'candyloop', 'Restart keeps the creative map');
+  assert.equal(state.game.difficultyId, 'normal', 'Restart keeps the selected difficulty');
+  assert.equal(state.game.wave, 1);
+  assert.equal(state.game.revivesRemaining, 3);
+  await page.keyboard.press('Escape'); await clickLabel('返回战区');
 
   for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [900, 675]]) {
     const mobile = await browser.newPage({ viewport: { width, height }, hasTouch: true, isMobile: true });
+    await observeText(mobile);
     mobile.on('pageerror', error => errors.push(error.message));
     await mobile.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
     await mobile.waitForFunction(() => window.__shellbound?.getSnapshot().buttons.length > 0);
@@ -129,7 +224,10 @@ try {
     const canvasRect = await mobile.locator('canvas').boundingBox();
     assert.ok(canvasRect.height <= height && canvasRect.width <= width, 'Mobile canvas must fit the visible viewport');
     const menuState = await mobileSnapshot();
+    await checkVisibleText(mobile, menuState, { menu: true });
+    assert.equal(menuState.selectedDifficulty, 'easy');
     if (width === 844) await mobile.screenshot({ path: 'artifacts/mobile-menu.png' });
+    await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-menu.png` });
     const start = menuState.buttons.find(button => button.label.includes('开始突围'));
     await mobile.touchscreen.tap(menuState.layout.ox + (start.x + start.w / 2) * menuState.layout.scale,
       menuState.layout.oy + (start.y + start.h / 2) * menuState.layout.scale);
@@ -139,6 +237,7 @@ try {
     });
     let ms = await mobileSnapshot();
     checkCombatLayout(ms);
+    await checkVisibleText(mobile, ms);
     const tapMobileLabel = async label => {
       const state = await mobileSnapshot();
       const button = state.buttons.find(item => item.label === label);
@@ -149,6 +248,7 @@ try {
     };
     await tapMobileLabel('切换武器');
     checkWeaponPicker(await mobileSnapshot());
+    await checkVisibleText(mobile, await mobileSnapshot());
     await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-weapons.png` });
     await tapMobileLabel('收起');
     ms = await mobileSnapshot();
@@ -211,8 +311,8 @@ try {
     await mobile.close();
   }
   assert.deepEqual(errors, [], 'Browser must not raise runtime errors');
-  console.log('浏览器检查通过：地图选择、武器面板展开/收起、键鼠射击、圆形换弹/拖动手雷、多指移动+开火+投雷、暂停/重开、三种手机/两种平板横屏尺寸、横竖屏。');
-  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/mobile.png、artifacts/mobile-*-grenade-aim.png、artifacts/mobile-*-reload.png、artifacts/mobile-*-weapons.png');
+  console.log('浏览器检查通过：工坊默认/回廊地图、难度选择/持久化/重开、真实字体边界、武器库、多指移动+开火+投雷、暂停/重开、三种手机/两种平板横屏尺寸、横竖屏。');
+  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/candy-corridor.png、artifacts/mobile.png、artifacts/mobile-*-grenade-aim.png、artifacts/mobile-*-reload.png、artifacts/mobile-*-weapons.png');
 } finally {
   await browser?.close();
   server.kill();
