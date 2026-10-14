@@ -83,7 +83,7 @@ test('three free revives restore health and protection while retaining the curre
   assert.equal(p.x, game.map.start.x); assert.equal(p.y, game.map.start.y);
   assert.deepEqual(p.weapons, ammo); assert.equal(p.currentWeapon, 'rifle'); assert.equal(p.grenades, 1);
   assert.deepEqual(game.environmentSnapshot().barrels, environment.barrels);
-  assert.deepEqual(game.spawnQueue, queue); assert.equal(game.enemies[0], walker);
+  assert.deepEqual([...game.spawnQueue], queue); assert.equal(game.enemies[0], walker);
   assert.deepEqual([game.wave, game.waveKills, game.waveTotal, game.score, game.kills, game.time], [5, 2, 21, 975, 31, 56]);
   assert.equal(game.bullets.length, 1); assert.equal(game.bullets[0].owner, 'player');
   assert.equal(game.grenades.length, 0); assert.deepEqual(game.previousInput, {});

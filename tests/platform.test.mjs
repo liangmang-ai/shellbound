@@ -35,6 +35,31 @@ export function createApp(config) {
 });
 const bundle = output.outputFiles[0].text;
 
+function rectanglesSeparate(a, b) {
+  return a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+}
+
+function rectangleOutsideCircle(rect, circle) {
+  const x = Math.max(rect.x, Math.min(circle.x, rect.x + rect.w));
+  const y = Math.max(rect.y, Math.min(circle.y, rect.y + rect.h));
+  return Math.hypot(x - circle.x, y - circle.y) >= circle.r;
+}
+
+function checkPausePlacement(state, stats, wave) {
+  const pause = state.buttons.find(button => button.label.includes('暂停'));
+  assert.ok(pause, 'the pause control is present');
+  assert.ok(rectanglesSeparate(pause, stats) && rectanglesSeparate(pause, wave), 'pause stays clear of stats and the wave counter');
+  for (const [role, circle] of Object.entries(state.controls)) {
+    assert.ok(rectangleOutsideCircle(pause, circle), `pause never blocks the ${role} circle`);
+  }
+  // Reserve a generous physical area for the native WeChat game icon/capsule.
+  const capsule = { x: state.layout.w - 170 / state.layout.scale, y: 0, w: 170 / state.layout.scale, h: 72 / state.layout.scale };
+  assert.ok(rectanglesSeparate(pause, capsule), 'pause stays outside the native upper-right icon/capsule area');
+  for (const button of state.buttons.filter(button => button !== pause && !button.role)) {
+    assert.ok(rectanglesSeparate(pause, button), `pause does not obstruct ${button.label}`);
+  }
+}
+
 function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = false, width = 844, height = 390, storedValues } = {}) {
   const events = {}, frames = new Map(), drawnText = [], textDraws = [], paintedPanels = [], storageReads = [];
   let pathPoints = [];
@@ -141,12 +166,18 @@ test('WeChat difficulty selection survives relaunch and the creative map restart
   const first = harness({ width: 667, height: 375 });
   first.step(0);
   const menu = first.app.getSnapshot();
+  for (const label of ['音效：开', '操作指南']) {
+    const control = menu.buttons.find(button => button.label === label);
+    assert.ok(menu.layout.ox + (control.x + control.w) * menu.layout.scale < 667 - 200,
+      'menu controls leave the native more-games button and capsule clear');
+  }
   assert.equal(menu.selectedMap, 'greenhouse', 'the workshop is the first default map');
   assert.equal(menu.selectedDifficulty, 'easy', 'new players start in the accessible mode');
   const workshop = menu.buttons.find(button => button.label === '汽泡工坊');
   const corridor = menu.buttons.find(button => button.label === '星糖回廊');
   assert.ok(workshop && corridor && workshop.y < corridor.y, 'the new map follows the workshop');
   assert.equal(menu.buttons.some(button => button.label === '薄荷庭院'), false, 'the old courtyard is not offered');
+  assert.equal(first.drawnText.some(text => /点击选择|已选择/.test(text)), false, 'map selection uses its visual state without redundant captions');
   assert.ok(menu.buttons.every(button => button.x >= 0 && button.y >= 0 && button.x + button.w <= menu.layout.w && button.y + button.h <= menu.layout.h), 'map and difficulty choices fit the smallest phone');
   first.tapLabel('挑战');
   first.step(16);
@@ -227,10 +258,10 @@ test('WeChat movement sets aim and a stationary fire press shoots until release 
   assert.equal(h.app.getSnapshot().game.player.weapons.pistol.clip, remaining, 'cancel stops sustained shooting');
 });
 
-test('WeChat circular reload and grenade buttons isolate actions from held movement and fire', () => {
+test('WeChat circular burst and grenade buttons isolate actions from held movement and fire', () => {
   const h = harness();
   h.startGame();
-  const { move, fire, reload, grenade } = h.app.getSnapshot().controls;
+  const { move, fire, boost, grenade } = h.app.getSnapshot().controls;
   h.touch('Start', 31, move.x, move.y);
   h.touch('Move', 31, move.x + move.r * .7, move.y);
   h.touch('Start', 32, fire.x, fire.y);
@@ -238,24 +269,29 @@ test('WeChat circular reload and grenade buttons isolate actions from held movem
   h.touch('End', 32, fire.x, fire.y);
   const before = h.app.getSnapshot().game.player;
 
-  h.touch('Start', 33, reload.x - reload.r + 1, reload.y - reload.r + 1);
-  h.touch('End', 33, reload.x - reload.r + 1, reload.y - reload.r + 1);
+  h.touch('Start', 33, boost.x - boost.r + 1, boost.y - boost.r + 1);
+  h.touch('End', 33, boost.x - boost.r + 1, boost.y - boost.r + 1);
   h.step(48);
-  assert.equal(h.app.getSnapshot().game.player.weapons.pistol.reloadRemaining, 0, 'a point outside the reload circle cannot activate it');
+  assert.equal(h.app.getSnapshot().game.player.boostCharges, 1, 'a point outside the burst circle cannot spend a charge');
+  assert.equal(h.app.getSnapshot().game.player.boostRemaining, 0);
 
   h.touch('Start', 34, grenade.x, grenade.y);
   h.touch('End', 34, grenade.x, grenade.y);
   h.step(64);
   let after = h.app.getSnapshot().game.player;
   assert.equal(after.grenades, before.grenades - 1, 'the grenade touch triggers its own action');
-  assert.equal(after.weapons.pistol.clip, before.weapons.pistol.clip, 'grenade and reload-edge touches do not fire');
+  assert.equal(after.weapons.pistol.clip, before.weapons.pistol.clip, 'grenade and burst-edge touches do not fire');
   assert.ok(after.x > before.x, 'action touches leave the independently held movement touch active');
 
-  h.touch('Start', 35, reload.x, reload.y);
-  h.touch('End', 35, reload.x, reload.y);
+  h.touch('Start', 35, boost.x, boost.y);
+  h.touch('End', 35, boost.x, boost.y);
   h.step(80);
   after = h.app.getSnapshot().game.player;
-  assert.ok(after.weapons.pistol.reloadRemaining > 0, 'the reload circle starts reloading the current gun');
+  assert.equal(after.boostCharges, 0, 'the burst circle spends exactly one stored charge');
+  assert.ok(after.boostRemaining > 7.9 && after.boostRemaining <= 8);
+  assert.equal(after.weapons.pistol.reloadRemaining, 0, 'burst does not manually reload the magazine');
+  assert.equal(after.weapons.pistol.clip, before.weapons.pistol.clip);
+  assert.ok(after.x > before.x, 'spending a burst charge leaves movement active');
   h.touch('Cancel', 31, move.x, move.y);
 });
 
@@ -269,7 +305,7 @@ for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [
     assert.equal(arena.w, layout.w);
     assert.equal(arena.h, layout.h);
     assert.ok(arena.scale * layout.scale > .75, 'world objects remain enlarged on compact phones');
-    const circles = ['move', 'fire', 'reload', 'grenade', 'weapon'].map(role => ({ role, ...controls[role] }));
+    const circles = ['move', 'fire', 'boost', 'grenade', 'weapon'].map(role => ({ role, ...controls[role] }));
     for (const control of circles) {
       assert.ok(control.x - control.r >= 0 && control.x + control.r <= layout.w, `${control.role} fits horizontally`);
       assert.ok(control.y - control.r >= 0 && control.y + control.r <= layout.h, `${control.role} fits vertically`);
@@ -285,9 +321,13 @@ for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [
     const wave = h.paintedPanels.findLast(panel => panel.x + panel.w / 2 === layout.w / 2 && panel.y < 40 && panel.y + panel.h > 68);
     const pause = buttons.find(button => button.label.includes('暂停'));
     assert.ok(stats && wave && pause, 'the actual rendered stats, wave, and pause HUD are observable');
-    assert.ok(stats.x + stats.w <= wave.x && wave.x + wave.w <= pause.x, 'stats, wave, and pause panels never overlap, including 4:3 tablets');
+    assert.ok(rectanglesSeparate(stats, wave), 'stats and wave panels never overlap, including 4:3 tablets');
+    checkPausePlacement(h.app.getSnapshot(), stats, wave);
+    const waveLabel = h.textDraws.findLast(draw => draw.value.includes(' · 第 '));
+    assert.match(waveLabel.value, /^休闲 · 第 \d+ 波$/, 'the endless counter omits a fixed last wave');
+    assert.equal(h.textDraws.some(draw => /加速\s*[×x]/.test(draw.value)), false, 'terrain speed is communicated graphically');
     const smallHudText = h.textDraws.filter(draw => /^(生命 |盾牌 |备用 |打开武器库|辅助瞄准|剩余 )/.test(draw.value));
-    assert.ok(smallHudText.length >= 6, 'actual HUD labels and captions render');
+    assert.ok(smallHudText.length >= 4, 'actual health, shield, reserve, and wave labels render');
     assert.ok(smallHudText.every(draw => Number(/(\d+)px/.exec(draw.font)?.[1]) >= 18), 'HUD labels use enlarged readable fonts');
     assert.ok(entry.w * layout.scale >= 44 && entry.h * layout.scale >= 44, 'the collapsed weapon panel has a large touch entry');
     h.touch('Start', 50, entry.x + entry.w / 2, entry.y + entry.h / 2);
@@ -295,6 +335,10 @@ for (const [width, height] of [[844, 390], [915, 412], [667, 375], [800, 600], [
     h.step(32);
     const expanded = h.app.getSnapshot();
     assert.equal(expanded.weaponPicker, true);
+    checkPausePlacement(expanded, stats, wave);
+    const library = h.paintedPanels.findLast(panel => panel.x === 24 && panel.y === 156 && panel.w === 326);
+    const expandedPause = expanded.buttons.find(button => button.label.includes('暂停'));
+    assert.ok(library && rectanglesSeparate(expandedPause, library), 'expanded weapon library cannot cover the pause control');
     const labels = ['啵啵手枪', '跳豆冲锋枪', '薄荷步枪', '爆米花机枪', '星光大狙', '脆壳霰弹枪'];
     const cards = labels.map(label => expanded.buttons.find(button => button.label === label));
     assert.ok(cards.every(Boolean), 'all six weapon choices appear in the expanded picker');
@@ -328,12 +372,16 @@ test('WeChat hide/show pauses active combat and resumes without simulating elaps
   h.touch('Move', 20, move.x + move.r * .7, move.y);
   h.touch('Start', 21, fire.x, fire.y);
   h.step(32);
+  h.tapLabel('爆发'); h.step(48);
   const before = h.app.getSnapshot().game;
+  assert.equal(before.player.boostCharges, 0);
+  assert.ok(before.player.boostRemaining > 7.9);
   h.events.Hide();
   assert.equal(h.app.getSnapshot().paused, true);
   h.events.Show();
   h.step(100000);
   assert.equal(h.app.getSnapshot().game.time, before.time);
+  assert.equal(h.app.getSnapshot().game.player.boostRemaining, before.player.boostRemaining, 'background time never consumes the burst timer');
   h.app.handleKey('down', 'Escape');
   h.step(100016);
   h.step(100032);
@@ -341,6 +389,9 @@ test('WeChat hide/show pauses active combat and resumes without simulating elaps
   assert.ok(after.time - before.time < 0.1);
   assert.equal(after.player.x, before.player.x, 'hidden touch input is cleared');
   assert.equal(after.player.weapons.pistol.clip, before.player.weapons.pistol.clip, 'hidden fire input is cleared');
+  assert.equal(after.player.boostCharges, 0);
+  assert.ok(Math.abs((before.player.boostRemaining - after.player.boostRemaining) - (after.time - before.time)) < 1e-9,
+    'after resuming only foreground simulation time is spent from burst');
 });
 
 test('WeChat legacy sizing, resizing and unavailable storage stay playable', () => {

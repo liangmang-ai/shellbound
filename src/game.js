@@ -1,9 +1,10 @@
 // Original, platform-independent game simulation. All coordinates are world pixels.
-export const MAX_WAVES = 10;
 export const BOSS_ATTACK = Object.freeze({ interval: 4, windup: 0.85, bulletSpeed: 310, damage: 18, radius: 7, life: 5, spread: 0.18 });
 export const BARREL_RULES = Object.freeze({ hp: 44, radius: 19, blastRadius: 145, damage: 155, playerDamage: 45, respawnSeconds: 12 });
 export const GRENADE_RULES = Object.freeze({ speed: 420, radius: 7, fuse: 1.05, defaultRange: 218.4, maxRange: 350, blastRadius: 135, damage: 190 });
 export const FREE_REVIVES = 3;
+export const BOOST_RULES = Object.freeze({ duration: 8, fireRateMultiplier: 2, bulletSpeedMultiplier: 2,
+  dropChance: .12, maxCharges: 99, initialCharges: 1 });
 export const DIFFICULTIES = Object.freeze({
   easy: Object.freeze({ id: 'easy', label: '休闲', regularMultiplier: .60, tankMultiplier: .55,
     hpMultiplier: .72, speedMultiplier: .80, damageMultiplier: .65, spawnIntervalMultiplier: 1.35,
@@ -82,7 +83,8 @@ const ENEMY_TYPES = {
 };
 const difficultyFor = id => Object.values(DIFFICULTIES).find(difficulty => difficulty.id === id) || DIFFICULTIES.normal;
 export function getWaveComposition(wave, difficultyId = 'normal') {
-  const level = clamp(Math.floor(finite(wave, 1)), 1, MAX_WAVES);
+  // Guard only numeric precision; ordinary play has no final wave or progression cap.
+  const level = clamp(Math.floor(finite(wave, 1)), 1, Math.floor(Number.MAX_SAFE_INTEGER / 8));
   const difficulty = difficultyFor(difficultyId);
   const regularCount = Math.max(1, Math.round((5 + level * 3) * difficulty.regularMultiplier));
   const baseTanks = Math.floor((level - 1) / 2);
@@ -106,6 +108,43 @@ function seededRandom(seed) {
     value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
     return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// Store counts, rather than an enemy-sized array, so an endless run stays cheap
+// between spawns. The array-like surface also supports isolated test fixtures.
+class WaveSpawnQueue {
+  constructor(wave, composition, seed) {
+    this.wave = wave;
+    this.regularRemaining = composition.regularCount;
+    this.tankRemaining = composition.tankCount;
+    this.seed = seed;
+    this.emitted = 0;
+    this.emittedRegular = 0;
+  }
+
+  get length() { return this.regularRemaining + this.tankRemaining; }
+
+  get 0() {
+    if (!this.length) return undefined;
+    if (this.tankRemaining && (this.emitted % 5 === 0 || !this.regularRemaining)) return 'tank';
+    // A stable per-enemy roll permits peeking at a blocked entrance without consuming RNG.
+    const roll = seededRandom((this.seed + Math.imul(this.emittedRegular, 0x9E3779B9)) >>> 0)();
+    return this.wave >= 2 && roll < Math.min(.7, .35 + this.wave * .018) ? 'runner' : 'grunt';
+  }
+
+  shift() {
+    const type = this[0];
+    if (type === undefined) return undefined;
+    if (type === 'tank') this.tankRemaining -= 1;
+    else { this.regularRemaining -= 1; this.emittedRegular += 1; }
+    this.emitted += 1;
+    return type;
+  }
+
+  *[Symbol.iterator]() {
+    const copy = Object.assign(Object.create(WaveSpawnQueue.prototype), this);
+    while (copy.length) yield copy.shift();
+  }
 }
 
 // First intersection of a segment and a rectangle, in segment fractions [0,1].
@@ -197,6 +236,7 @@ export class Game {
       shield: 35, maxShield: 100, grenades: 3, maxGrenades: 8, speed: 225,
       currentWeapon: 'pistol', weapons: { pistol: this.makeAmmo('pistol') },
       invulnerability: 0, reviveProtectionRemaining: 0, speedMultiplier: 1, speedZoneId: null,
+      boostCharges: BOOST_RULES.initialCharges, boostRemaining: 0,
     };
     // Fixed stations respawn independently; barrels never block navigation or add wave enemies.
     this.barrels = (this.map.barrelStations || []).map(station => ({
@@ -211,7 +251,6 @@ export class Game {
     this.effects = [];
     this.events = [];
     this.wave = 0;
-    this.maxWaves = MAX_WAVES;
     this.status = 'intermission';
     this.score = 0;
     this.kills = 0;
@@ -233,20 +272,14 @@ export class Game {
   }
 
   startNextWave() {
-    if (this.status !== 'intermission' || this.wave >= MAX_WAVES) return false;
+    if (this.status !== 'intermission') return false;
     this.wave += 1;
     this.waveKills = 0;
     const composition = getWaveComposition(this.wave, this.difficulty.id);
     this.waveTotal = composition.total;
     this.status = 'playing';
     this.spawnTimer = 0.25;
-    this.spawnQueue = [];
-    for (let i = 0; i < composition.regularCount; i++) {
-      const roll = this.random();
-      const type = this.wave >= 2 && roll < 0.35 + this.wave * 0.018 ? 'runner' : 'grunt';
-      this.spawnQueue.push(type);
-    }
-    for (let i = 0; i < composition.tankCount; i++) this.spawnQueue.splice(i * 5, 0, 'tank');
+    this.spawnQueue = new WaveSpawnQueue(this.wave, composition, Math.floor(this.random() * 0x100000000));
     this.events.push({ type: 'wave', wave: this.wave });
     return true;
   }
@@ -263,6 +296,20 @@ export class Game {
     if (ammo.reloadRemaining > 0 || ammo.clip >= def.clipSize || ammo.reserve <= 0) return false;
     ammo.reloadRemaining = def.reloadTime;
     this.events.push({ type: 'reload', weaponId: id });
+    return true;
+  }
+
+  activateBoost() {
+    const p = this.player;
+    if (this.status !== 'playing' || p.hp <= 0 || p.boostCharges <= 0) return false;
+    // A new burst accelerates the pending shot as well as subsequent fire cadence.
+    // Spending another charge adds time without repeatedly halving the same cooldown.
+    if (p.boostRemaining <= 0) for (const ammo of Object.values(p.weapons)) {
+      if (ammo.cooldown > 0) ammo.cooldown /= BOOST_RULES.fireRateMultiplier;
+    }
+    p.boostCharges -= 1;
+    p.boostRemaining += BOOST_RULES.duration;
+    this.events.push({ type: 'boostActivation', remaining: p.boostRemaining, charges: p.boostCharges });
     return true;
   }
 
@@ -352,6 +399,10 @@ export class Game {
     this.updateMap(dt);
     p.invulnerability = Math.max(0, p.invulnerability - dt);
     p.reviveProtectionRemaining = Math.max(0, p.reviveProtectionRemaining - dt);
+    if (this.status === 'playing') {
+      p.boostRemaining = Math.max(0, p.boostRemaining - dt);
+      if (p.boostRemaining <= 1e-7) p.boostRemaining = 0;
+    }
     for (const [id, ammo] of Object.entries(p.weapons)) {
       ammo.cooldown = Math.max(-dt, ammo.cooldown - dt);
       if (ammo.reloadRemaining > 0) {
@@ -382,8 +433,9 @@ export class Game {
       this.equipWeapon(owned[(owned.indexOf(p.currentWeapon) + 1) % owned.length]);
     }
     if (pressed('reload')) this.tryReload();
+    if (pressed('boost')) this.activateBoost();
     if (pressed('grenade')) this.throwGrenade(input.grenadeTarget);
-    this.previousInput = { grenade: Boolean(input.grenade), reload: Boolean(input.reload), weaponNext: Boolean(input.weaponNext) };
+    this.previousInput = { grenade: Boolean(input.grenade), reload: Boolean(input.reload), boost: Boolean(input.boost), weaponNext: Boolean(input.weaponNext) };
     if (this.status === 'playing') {
       if (input.shoot) this.fire();
       this.updateSpawns(dt);
@@ -406,6 +458,9 @@ export class Game {
 
   fire() {
     const p = this.player, id = p.currentWeapon, def = WEAPONS[id], ammo = p.weapons[id];
+    const boosted = p.boostRemaining > 0;
+    const fireInterval = def.fireInterval / (boosted ? BOOST_RULES.fireRateMultiplier : 1);
+    const bulletSpeed = def.bulletSpeed * (boosted ? BOOST_RULES.bulletSpeedMultiplier : 1);
     if (ammo.reloadRemaining > 0) return;
     if (ammo.clip <= 0) { this.tryReload(); return; }
     // Carry fractional cadence across frames, with a strict bound for stalled frames.
@@ -413,7 +468,7 @@ export class Game {
     while (ammo.cooldown <= 0 && ammo.clip > 0 && shots < 3) {
       shots += 1;
       ammo.clip -= 1;
-      ammo.cooldown += def.fireInterval;
+      ammo.cooldown += fireInterval;
       const pellets = def.pellets || 1;
       for (let pellet = 0; pellet < pellets; pellet++) {
         const spread = pellets === 1 ? (this.random() * 2 - 1) * def.spread
@@ -426,10 +481,11 @@ export class Game {
         const muzzleBlocked = this.map.obstacles.some(rect => segmentRect(p.x, p.y, muzzleX, muzzleY, rect) !== null);
         const x = muzzleBlocked ? p.x : muzzleX, y = muzzleBlocked ? p.y : muzzleY;
         this.bullets.push({ id: this.nextId++, x, y, prevX: x, prevY: y, radius: 3,
-          vx: Math.cos(angle) * def.bulletSpeed, vy: Math.sin(angle) * def.bulletSpeed,
+          vx: Math.cos(angle) * bulletSpeed, vy: Math.sin(angle) * bulletSpeed,
           damage: def.damage, remainingHits: def.piercing, hitIds: new Set(),
           owner: 'player', weapon: id, distanceTravelled: 0, maxRange: def.range,
-          life: def.range ? def.range / def.bulletSpeed : id === 'sniper' ? 1.1 : 0.95 });
+          life: def.range ? def.range / bulletSpeed
+            : (id === 'sniper' ? 1.1 : .95) / (boosted ? BOOST_RULES.bulletSpeedMultiplier : 1) });
         if (pellet === 0) {
           this.events.push({ type: 'shot', weaponId: id, x, y });
           this.addEffect('muzzle', x, y, 12, 0.075, def.color, { angle: p.angle, weaponId: id });
@@ -441,7 +497,7 @@ export class Game {
 
   updateSpawns(dt) {
     this.spawnTimer -= dt;
-    if (this.spawnQueue.length === 0 || this.spawnTimer > 0 || this.enemies.length >= 28) return;
+    if (this.spawnQueue.length === 0 || this.spawnTimer > 0 || this.enemies.length >= 36) return;
     const type = this.spawnQueue[0], def = ENEMY_TYPES[type], difficulty = this.difficulty;
     const available = this.map.spawnPoints.filter(point => distanceSquared(point, this.player) > 220 ** 2);
     const points = available.length ? available : this.map.spawnPoints;
@@ -459,7 +515,8 @@ export class Game {
     this.spawnQueue.shift();
     const hp = Math.round(def.hp * (1 + (this.wave - 1) * 0.045) * difficulty.hpMultiplier);
     const enemy = { id: this.nextId++, x: point.x, y: point.y, type, radius: def.radius,
-      hp, maxHp: hp, speed: def.speed * (1 + (this.wave - 1) * 0.025) * difficulty.speedMultiplier,
+      hp, maxHp: hp, speed: Math.min(type === 'runner' ? 190 : type === 'tank' ? 110 : 145,
+        def.speed * (1 + (this.wave - 1) * .025) * difficulty.speedMultiplier),
       damage: def.damage * difficulty.damageMultiplier, angle: 0, hitFlash: 0 };
     if (type === 'tank') {
       enemy.rangedCooldown = difficulty.bossInterval - difficulty.bossWindup;
@@ -921,6 +978,8 @@ export class Game {
   }
 
   dropLoot(x, y) {
+    // Boosts have their own roll, leaving existing ammunition and health odds intact.
+    if (this.random() < BOOST_RULES.dropChance) this.spawnPickup('boost', x, y);
     const roll = this.random();
     if (roll < 0.13) this.spawnPickup('ammo', x, y);
     else if (roll < 0.19) this.spawnPickup('shield', x, y);
@@ -950,6 +1009,7 @@ export class Game {
     } else if (pickup.type === 'shield') p.shield = Math.min(p.maxShield, p.shield + 40);
     else if (pickup.type === 'health') p.hp = Math.min(p.maxHp, p.hp + 25);
     else if (pickup.type === 'grenade') p.grenades = Math.min(p.maxGrenades, p.grenades + 2);
+    else if (pickup.type === 'boost') p.boostCharges = Math.min(BOOST_RULES.maxCharges, p.boostCharges + 1);
     this.addEffect('pickup', pickup.x, pickup.y, 28, 0.35, '#b7ffd8');
     this.events.push({ type: 'pickup', pickupType: pickup.type, weaponId: pickup.weaponId });
   }
@@ -971,11 +1031,6 @@ export class Game {
     this.grenades = [];
     this.score += this.wave * 100;
     this.events.push({ type: 'waveClear', wave: this.wave });
-    if (this.wave >= MAX_WAVES) {
-      this.status = 'won';
-      this.events.push({ type: 'won' });
-      return;
-    }
     this.status = 'intermission';
     const p = this.player;
     const drops = [['ammo', -55, 0], ['shield', 55, 0], ['grenade', 0, 55], ['health', 0, -55]];

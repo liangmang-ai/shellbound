@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Game, BOSS_ATTACK, MAPS, MAX_WAVES } from '../src/game.js';
+import { Game, BOSS_ATTACK, MAPS } from '../src/game.js';
 
 const advance = (game, seconds, input = {}) => {
   let remaining = seconds;
@@ -59,20 +59,21 @@ const beginCharge = (game, boss) => {
 test('ordinary enemies increase each wave and purple bosses increase predictably every two waves', () => {
   for (const seed of [1, 13, 71]) {
     let previousRegular = 0, previousBosses = 0;
-    for (let wave = 1; wave <= MAX_WAVES; wave++) {
+    for (let wave = 1; wave <= 30; wave++) {
       const game = new Game({ seed });
       game.wave = wave - 1;
       game.status = 'intermission';
       game.startNextWave();
-      const bosses = game.spawnQueue.filter(type => type === 'tank').length;
-      const regular = game.spawnQueue.filter(type => type === 'grunt' || type === 'runner').length;
+      const queued = [...game.spawnQueue];
+      const bosses = queued.filter(type => type === 'tank').length;
+      const regular = queued.filter(type => type === 'grunt' || type === 'runner').length;
       assert.equal(regular, 5 + wave * 3, `seed ${seed}, wave ${wave}: ordinary count`);
       assert.equal(bosses, Math.floor((wave - 1) / 2), `seed ${seed}, wave ${wave}: boss count`);
       assert.equal(game.spawnQueue.length, regular + bosses);
       assert.equal(game.waveTotal, regular + bosses);
       assert.ok(regular > previousRegular);
       assert.ok(bosses >= previousBosses);
-      assert.equal(game.spawnQueue.includes('boss'), false, 'existing purple tanks remain the boss type');
+      assert.equal(queued.includes('boss'), false, 'existing purple tanks remain the boss type');
       previousRegular = regular;
       previousBosses = bosses;
     }

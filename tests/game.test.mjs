@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Game, MAPS, WEAPONS, MAX_WAVES, segmentRoundedRect } from '../src/game.js';
+import { Game, MAPS, WEAPONS, segmentRoundedRect } from '../src/game.js';
 
 const tick = (game, seconds, input = {}) => {
   for (let time = 0; time < seconds; time += 1 / 60) game.update(1 / 60, input);
@@ -176,20 +176,24 @@ test('killing the last enemy advances in the same update and preserves player st
   assert.equal(game.wave, 2, 'the new spawn queue prevents clearing another wave immediately');
 });
 
-test('ten cleared waves produce victory and terminal states do not advance', () => {
+test('clearing the tenth wave starts the eleventh and death still stops simulation', () => {
   const game = new Game();
-  game.wave = MAX_WAVES;
+  game.wave = 10;
   game.spawnQueue = []; game.enemies = [];
   game.update(1 / 60);
-  assert.equal(game.status, 'won');
-  assert.equal(game.wave, MAX_WAVES);
-  assert.equal(game.spawnQueue.length, 0);
+  assert.equal(game.status, 'playing');
+  assert.equal(game.wave, 11);
+  assert.ok(game.spawnQueue.length > 0);
+  assert.equal(game.events.some(event => event.type === 'won'), false);
   const time = game.time;
   game.update(0.1, { moveX: 1, shoot: true });
-  assert.equal(game.time, time);
+  assert.ok(game.time > time);
   const dead = new Game(); dead.player.hp = 0;
   dead.update(1 / 60);
   assert.equal(dead.status, 'dead');
+  const deadTime = dead.time;
+  dead.update(.1, { moveX: 1, shoot: true });
+  assert.equal(dead.time, deadTime);
   const fresh = new Game();
   assert.equal(fresh.wave, 1); assert.equal(fresh.player.hp, 100);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Game, MAPS, LEGACY_MAPS, BARREL_RULES, MAX_WAVES, WEAPONS } from '../src/game.js';
+import { Game, MAPS, LEGACY_MAPS, BARREL_RULES, WEAPONS } from '../src/game.js';
 
 const factory = () => {
   const game = new Game({ mapId: 'greenhouse', seed: 42 });
@@ -202,7 +202,7 @@ test('oil stations refresh once after twelve active gameplay seconds with clean 
   game.update(1 / 60);
   assert.equal(game.events.filter(event => event.type === 'barrelRespawn').length, 0);
   game.explodeBarrel(barrel);
-  game.status = 'won'; game.wave = MAX_WAVES;
+  game.status = 'dead';
   tick(game, 2);
   assert.equal(barrel.respawnRemaining, BARREL_RULES.respawnSeconds);
 });

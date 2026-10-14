@@ -132,6 +132,75 @@ test('grenade button throws along the last movement facing without firing or mov
   assert.equal(h.game.player.y, position.y);
 });
 
+test('burst replaces reload at the same circle and works alongside held movement and fire', t => {
+  const h = harness(t), { move, fire, boost } = h.app.getSnapshot().controls;
+  assert.equal(h.app.getSnapshot().controls.reload, undefined);
+  assert.equal(boost.x, h.app.getSnapshot().layout.w - 260);
+  assert.equal(boost.y, h.app.getSnapshot().layout.h - 78);
+  assert.equal(boost.r, 39);
+  assert.equal(h.game.player.boostCharges, 1);
+  h.touch('start', 1, move.x, move.y);
+  h.touch('move', 1, move.x + 40, move.y);
+  h.touch('start', 2, fire.x, fire.y); h.step();
+  const before = { x: h.game.player.x, clip: h.game.player.weapons.pistol.clip };
+  h.tap('爆发', 3); h.step();
+  assert.equal(h.game.player.boostCharges, 0);
+  assert.ok(h.game.player.boostRemaining > 7.9 && h.game.player.boostRemaining <= 8);
+  assert.equal(h.game.player.weapons.pistol.reloadRemaining, 0, 'burst never manually reloads the current magazine');
+  assert.ok(h.game.player.x > before.x, 'a third finger leaves movement held');
+  for (let i = 0; i < 9; i++) h.step();
+  assert.ok(h.game.player.weapons.pistol.clip < before.clip, 'a third finger leaves sustained fire held');
+  h.touch('end', 1, move.x + 40, move.y); h.touch('end', 2, fire.x, fire.y);
+});
+
+test('burst ignores circle corners and empty inventory without interrupting held controls', t => {
+  const h = harness(t), { move, fire, boost } = h.app.getSnapshot().controls;
+  h.touch('start', 3, boost.x - boost.r + 1, boost.y - boost.r + 1);
+  h.touch('end', 3, boost.x - boost.r + 1, boost.y - boost.r + 1); h.step();
+  assert.equal(h.game.player.boostCharges, 1, 'bounding-box corners are outside the skill circle');
+  assert.equal(h.game.player.boostRemaining, 0);
+  h.game.player.boostCharges = 0;
+  h.touch('start', 1, move.x, move.y); h.touch('move', 1, move.x + 40, move.y);
+  h.touch('start', 2, fire.x, fire.y); h.step();
+  const before = { x: h.game.player.x, clip: h.game.player.weapons.pistol.clip };
+  h.tap('爆发', 4); h.step();
+  assert.equal(h.game.player.boostCharges, 0);
+  assert.equal(h.game.player.boostRemaining, 0);
+  assert.ok(h.game.player.x > before.x);
+  for (let i = 0; i < 16; i++) h.step();
+  assert.ok(h.game.player.weapons.pistol.clip < before.clip, 'a depleted skill does not cancel fire');
+});
+
+test('separate burst taps consume separate charges even in one frame and pause freezes duration', t => {
+  const h = harness(t);
+  h.game.player.boostCharges = 3;
+  h.tap('爆发', 3); h.tap('爆发', 4); h.step();
+  assert.equal(h.game.player.boostCharges, 1);
+  assert.ok(h.game.player.boostRemaining > 15.9 && h.game.player.boostRemaining <= 16, 'two deliberate taps each extend duration');
+  h.app.pause(); h.step();
+  const remaining = h.game.player.boostRemaining;
+  for (let i = 0; i < 20; i++) h.step(50);
+  assert.equal(h.game.player.boostRemaining, remaining);
+  assert.equal(h.game.player.boostCharges, 1);
+  h.tap('继续突围'); h.step(); h.step(50);
+  assert.ok(h.game.player.boostRemaining < remaining, 'resuming starts the remaining combat timer');
+});
+
+test('R activates burst without reload and held keyboard repeats do not spend extra charges', t => {
+  const h = harness(t, 'web');
+  h.game.player.boostCharges = 3;
+  h.game.player.weapons.pistol.clip = 7;
+  h.app.handleKey('down', 'r'); h.step();
+  assert.equal(h.game.player.boostCharges, 2);
+  assert.equal(h.game.player.weapons.pistol.reloadRemaining, 0);
+  h.app.handleKey('down', 'r'); h.step();
+  h.app.handleKey('down', 'r'); h.step();
+  assert.equal(h.game.player.boostCharges, 2, 'holding R never consumes a stored stack through auto-repeat');
+  h.app.handleKey('up', 'r'); h.app.handleKey('down', 'r'); h.step();
+  assert.equal(h.game.player.boostCharges, 1, 'a fresh key press uses the next charge');
+  assert.ok(h.game.player.boostRemaining > 15.8);
+});
+
 test('touch facing ignores stale mouse aim and desktop pointer aim remains available', t => {
   const h = harness(t, 'web');
   const y = h.app.getSnapshot().layout.h * .6;

@@ -42,7 +42,7 @@ test('difficulty selection is explicit, defaults to standard, and unknown values
 
 test('all difficulties increase wave pressure, with a visibly smaller casual crowd and fewer late bosses', () => {
   const previous = { easy: 0, normal: 0, hard: 0 };
-  for (let wave = 1; wave <= 10; wave++) {
+  for (let wave = 1; wave <= 30; wave++) {
     const easy = getWaveComposition(wave, 'easy'), normal = getWaveComposition(wave), hard = getWaveComposition(wave, 'hard');
     assert.equal(normal.regularCount, 5 + wave * 3);
     assert.equal(normal.tankCount, Math.floor((wave - 1) / 2));
@@ -54,8 +54,9 @@ test('all difficulties increase wave pressure, with a visibly smaller casual cro
       const game = new Game({ seed: 3, difficultyId: id });
       game.wave = wave - 1; game.status = 'intermission'; game.startNextWave();
       const composition = getWaveComposition(wave, id);
-      assert.equal(game.spawnQueue.filter(type => type !== 'tank').length, composition.regularCount);
-      assert.equal(game.spawnQueue.filter(type => type === 'tank').length, composition.tankCount);
+      const queued = [...game.spawnQueue];
+      assert.equal(queued.filter(type => type !== 'tank').length, composition.regularCount);
+      assert.equal(queued.filter(type => type === 'tank').length, composition.tankCount);
       assert.equal(game.waveTotal, composition.total);
       assert.ok(composition.regularCount > previous[id]);
       previous[id] = composition.regularCount;
@@ -64,7 +65,7 @@ test('all difficulties increase wave pressure, with a visibly smaller casual cro
   assert.equal(getWaveComposition(10, 'easy').tankCount, 2);
   assert.equal(getWaveComposition(10, 'hard').tankCount, 5);
   assert.deepEqual(getWaveComposition(NaN), getWaveComposition(1));
-  assert.deepEqual(getWaveComposition(999), getWaveComposition(10));
+  assert.ok(getWaveComposition(999).total > getWaveComposition(30).total);
 });
 
 test('casual enemies are weaker and slower, have gentler attacks and take longer to enter', () => {

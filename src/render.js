@@ -121,8 +121,9 @@ function obstacle(ctx, o, palette, index, factory = false, candy = false) {
       ctx.fillStyle = '#b782bc'; roundRect(ctx, x + w / 2 - 57, y + h / 2 - 52, 114, 96, 22); ctx.fill();
       ctx.fillStyle = '#fff1cb'; roundRect(ctx, x + w / 2 - 53, y + h / 2 - 58, 106, 90, 22); ctx.fill();
       star(ctx, x + w / 2, y + h / 2 - 18, 28, '#f4b978', '#bc789c');
-      ctx.fillStyle = '#734565'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('星糖岛', x + w / 2, y + h / 2 + 18);
+      circle(ctx, x + w / 2 - 17, y + h / 2 + 19, 4, '#eba3b3');
+      circle(ctx, x + w / 2, y + h / 2 + 19, 4, '#d4abde');
+      circle(ctx, x + w / 2 + 17, y + h / 2 + 19, 4, '#eba3b3');
     }
     return;
   }
@@ -135,8 +136,7 @@ function obstacle(ctx, o, palette, index, factory = false, candy = false) {
     circle(ctx, x + w - 17, y + 25, 2, '#edfff0');
     if (w > 100 && h > 50) {
       ctx.fillStyle = '#335866'; roundRect(ctx, x + w / 2 - 27, y + h / 2 - 17, 54, 28, 5); ctx.fill();
-      ctx.fillStyle = '#effff6'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('汽泡', x + w / 2, y + h / 2 - 3);
+      for (let j = 0; j < 3; j++) circle(ctx, x + w / 2 + (j - 1) * 13, y + h / 2 - 3, j === 1 ? 5 : 3.5, '#b5efcb');
     }
     ctx.restore(); return;
   }
@@ -182,16 +182,12 @@ function workshopFloor(ctx, map, t) {
   for (let y = 82; y < h - 80; y += 145) { roundRect(ctx, w - 39, y, 26, 10, 3); ctx.fill(); }
   ctx.save(); ctx.strokeStyle = '#819da570'; ctx.lineWidth = 5; ctx.setLineDash([14, 14]);
   roundRect(ctx, 20, 20, w - 40, h - 40, 13); ctx.stroke(); ctx.restore();
-  for (const [i, point] of (map.spawnPoints || []).entries()) {
+  for (const point of map.spawnPoints || []) {
     circle(ctx, num(point.x), num(point.y), 39, '#afc5c9', '#93aeb5', 3);
     circle(ctx, num(point.x), num(point.y), 29, null, '#ecf4e8', 3);
     for (let j = -1; j <= 1; j++) {
       ctx.strokeStyle = '#86a4ad'; ctx.lineWidth = 3; ctx.beginPath();
       ctx.moveTo(num(point.x) - 15, num(point.y) + j * 8); ctx.lineTo(num(point.x) + 15, num(point.y) + j * 8); ctx.stroke();
-    }
-    if (i < 2) {
-      ctx.fillStyle = '#365766'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('出货口', num(point.x), num(point.y) + 55);
     }
   }
   for (const zone of map.speedZones || []) speedZone(ctx, zone, t);
@@ -222,8 +218,6 @@ function speedZone(ctx, zone, t, candy = false) {
   ctx.stroke();
   ctx.restore();
   ctx.strokeStyle = candy ? '#fff0c0' : '#e8f6d5'; ctx.lineWidth = 3; roundRect(ctx, x, y, w, h, 12); ctx.stroke();
-  ctx.fillStyle = candy ? '#45265f' : '#174b54'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(candy ? '加速 ×1.45' : vertical ? '加速带' : '加速带 ×1.45', x + w / 2, y + 16);
 }
 
 function barrelPad(ctx, barrel, t) {
@@ -270,6 +264,11 @@ function pickupIcon(ctx, type, weaponId) {
     ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(10, -8); ctx.lineTo(8, 4); ctx.quadraticCurveTo(5, 10, 0, 13);
     ctx.quadraticCurveTo(-5, 10, -8, 4); ctx.lineTo(-10, -8); ctx.closePath(); ctx.fillStyle = '#7cd0e2'; ctx.fill(); ctx.stroke();
     ctx.strokeStyle = '#fff8de'; ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(0, 7); ctx.stroke();
+  } else if (type === 'boost') {
+    // A single bolt is legible at pickup size and matches the boost button.
+    ctx.beginPath(); ctx.moveTo(1, -14); ctx.lineTo(-10, 2); ctx.lineTo(-2, 2);
+    ctx.lineTo(-4, 14); ctx.lineTo(11, -4); ctx.lineTo(3, -4); ctx.lineTo(6, -14); ctx.closePath();
+    ctx.fillStyle = '#ffbe58'; ctx.fill(); ctx.strokeStyle = '#8b6238'; ctx.lineWidth = 2; ctx.stroke();
   } else if (type === 'grenade') {
     circle(ctx, 0, 3, 9, '#819969', ink, 2); ctx.fillStyle = ink; roundRect(ctx, -4, -9, 8, 5, 1); ctx.fill();
     ctx.beginPath(); ctx.moveTo(3, -9); ctx.lineTo(9, -10); ctx.lineTo(12, -5); ctx.stroke();
@@ -284,7 +283,7 @@ function pickupIcon(ctx, type, weaponId) {
 }
 
 function pickup(ctx, p, t) {
-  const pulse = Math.sin(t * 3.5 + num(p.x)), shade = { shield: '#8ee4f1', grenade: '#b7d892', health: '#ffb5a8', ammo: '#ffdd89', weapon: '#ffe8aa' }[p.type] || '#ffe8aa';
+  const pulse = Math.sin(t * 3.5 + num(p.x)), shade = { shield: '#8ee4f1', grenade: '#b7d892', health: '#ffb5a8', ammo: '#ffdd89', weapon: '#ffe8aa', boost: '#ffbd61' }[p.type] || '#ffe8aa';
   const y = num(p.y) + pulse * 2;
   ctx.save(); ctx.translate(num(p.x), y);
   circle(ctx, 0, 0, 26 + pulse * 2, `${shade}35`);
@@ -351,6 +350,24 @@ function speedIndicator(ctx, player, t) {
   ctx.moveTo(-40, 13); ctx.lineTo(-26, 13); ctx.stroke(); ctx.restore();
 }
 
+function boostIndicator(ctx, player, t) {
+  if (num(player.boostRemaining) <= 0) return;
+  const pulse = Math.sin(t * 7) * 1.5;
+  ctx.save(); ctx.translate(num(player.x), num(player.y) + 20);
+  // Keep the warm energy ring at the feet, away from bullets and the blue
+  // shield/revive outlines. Its moving sparks also remain clear without text.
+  ctx.beginPath(); ctx.ellipse(0, 0, 34 + pulse, 12 + pulse * .25, 0, 0, TAU);
+  ctx.fillStyle = '#ffb84b25'; ctx.fill(); ctx.strokeStyle = '#ffe1a0'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.setLineDash([8, 7]); ctx.lineDashOffset = -t * 26;
+  ctx.beginPath(); ctx.ellipse(0, 0, 39 + pulse, 15 + pulse * .25, 0, 0, TAU);
+  ctx.strokeStyle = '#f0a744b0'; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+  for (let i = 0; i < 2; i++) {
+    const angle = t * 3 + i * Math.PI;
+    circle(ctx, Math.cos(angle) * 38, Math.sin(angle) * 14, 2.8, '#fff0bc', '#e6a348', 1.5);
+  }
+  ctx.restore();
+}
+
 // Stop the warning at the same cover that blocks a shot. The ray starts at the
 // enemy center, so a charge beside cover never suggests that a shot passes it.
 function warningLength(enemy, map, angle) {
@@ -395,13 +412,15 @@ function reloadIndicator(ctx, player, map) {
   const x = Math.max(46, Math.min(num(map.width, 1280) - 46, num(player.x)));
   const y = Math.max(20, num(player.y) - num(player.radius, 20) - 36);
   ctx.save();
-  ctx.fillStyle = '#243c48'; roundRect(ctx, x - 42, y - 16, 84, 32, 16); ctx.fill();
+  ctx.fillStyle = '#243c48'; roundRect(ctx, x - 28, y - 14, 56, 28, 14); ctx.fill();
   ctx.strokeStyle = '#fff0cd75'; ctx.lineWidth = 1.5; ctx.stroke();
-  circle(ctx, x - 22, y, 8, null, '#90a39f', 2);
+  ctx.fillStyle = '#fff1ca'; roundRect(ctx, x - 18, y - 7, 11, 14, 2); ctx.fill();
+  ctx.strokeStyle = '#63817d'; ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.moveTo(x - 15, y - 3); ctx.lineTo(x - 10, y - 3);
+  ctx.moveTo(x - 15, y + 1); ctx.lineTo(x - 10, y + 1); ctx.stroke();
+  circle(ctx, x + 11, y, 8, null, '#90a39f', 2);
   ctx.strokeStyle = '#f8df8e'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.arc(x - 22, y, 8, -Math.PI / 2, -Math.PI / 2 + TAU * progress); ctx.stroke();
-  ctx.fillStyle = '#fff1ca'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.font = 'bold 16px sans-serif'; ctx.fillText('换弹', x + 12, y);
+  ctx.beginPath(); ctx.arc(x + 11, y, 8, -Math.PI / 2, -Math.PI / 2 + TAU * progress); ctx.stroke();
   ctx.restore();
 }
 
@@ -501,6 +520,7 @@ export function drawArena(ctx, game, bounds = {}) {
   for (const [i, o] of (map.obstacles || []).entries()) obstacle(ctx, o, palette, i, factory, candy);
   const player = game.player;
   if (player) speedIndicator(ctx, player, t);
+  if (player) boostIndicator(ctx, player, t);
   if (player) reviveProtection(ctx, player, map, t);
   grenadePreview(ctx, player, grenadeAim, t);
   const activeBarrels = (game.barrels || []).filter(b => b.active !== false);

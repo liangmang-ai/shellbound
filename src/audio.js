@@ -12,6 +12,7 @@ export function soundForEvent(event) {
   if (event.type === 'unlock' || event.type === 'ammo') return 'pickup';
   if (event.type === 'barrelExplosion') return 'explosion';
   if (event.type === 'speedBoost') return event.active ? 'boost' : null;
+  if (event.type === 'boostActivation') return 'boost';
   return SOUND_DEFINITIONS[event.type] ? event.type : null;
 }
 

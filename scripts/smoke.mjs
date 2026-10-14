@@ -30,8 +30,8 @@ const observeText = async page => page.addInitScript(() => {
 const checkVisibleText = async (page, state, { menu = false } = {}) => {
   const viewport = page.viewportSize();
   const draws = await page.evaluate(() => window.__shellboundTextDraws);
-  const isHudText = value => /^(生命 |盾牌 |备用 |剩余 |加速 ×)/.test(value) || / · 第 /.test(value)
-    || ['打开武器库 ▾', '收起武器库 ▴', '辅助瞄准', '移动瞄准', '手动瞄准', 'Ⅱ 暂停', '开火', '换弹', '切枪'].includes(value)
+  const isHudText = value => /^(生命 |盾牌 |备用 |剩余 )/.test(value) || / · 第 /.test(value)
+    || ['Ⅱ 暂停', '开火', '爆发', '切枪'].includes(value)
     || /^手雷 \d+$/.test(value);
   const unique = [...new Map(draws.filter(draw => menu ? /[\u4e00-\u9fff]/.test(draw.value)
     : isHudText(draw.value))
@@ -42,6 +42,7 @@ const checkVisibleText = async (page, state, { menu = false } = {}) => {
       `Canvas text remains visible at ${viewport.width}×${viewport.height}: ${draw.value}`);
   }
   if (menu) {
+    assert.equal(unique.some(draw => /点击选择|已选择/.test(draw.value)), false, 'map selection omits redundant instructions');
     for (let i = 0; i < unique.length; i++) for (let j = i + 1; j < unique.length; j++) {
       const a = unique[i], b = unique[j];
       assert.ok(a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1,
@@ -53,6 +54,7 @@ const checkVisibleText = async (page, state, { menu = false } = {}) => {
         `${label} difficulty has a usable touch target`);
     }
   }
+  if (!menu) assert.equal(draws.some(draw => /加速\s*[×x]/.test(draw.value)), false, 'speed terrain does not add redundant HUD text');
   if (state.weaponPicker) {
     const names = ['手枪', '冲锋枪', '步枪', '机枪', '大狙', '霰弹枪'];
     const labels = ['啵啵手枪', '跳豆冲锋枪', '薄荷步枪', '爆米花机枪', '星光大狙', '脆壳霰弹枪'];
@@ -83,15 +85,32 @@ try {
   await page.waitForFunction(() => window.__shellbound?.getSnapshot().buttons.length > 0);
   const snapshot = () => page.evaluate(() => window.__shellbound.getSnapshot());
   const gunLabels = ['啵啵手枪', '跳豆冲锋枪', '薄荷步枪', '爆米花机枪', '星光大狙', '脆壳霰弹枪'];
+  const separateRectangles = (a, b) => a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+  const checkPausePlacement = state => {
+    const pause = state.buttons.find(button => button.label.includes('暂停'));
+    assert.ok(pause, 'The relocated pause control is present');
+    const stats = { x: 24, y: 18, w: 326, h: 126 }, wave = { x: state.layout.w / 2 - 124, y: 20, w: 248, h: 65 };
+    assert.ok(separateRectangles(stats, wave) && separateRectangles(stats, pause) && separateRectangles(wave, pause), 'Stats, wave counter, and pause remain separated');
+    const capsule = { x: state.layout.w - 170 / state.layout.scale, y: 0, w: 170 / state.layout.scale, h: 72 / state.layout.scale };
+    assert.ok(separateRectangles(pause, capsule), 'Pause stays outside the WeChat upper-right icon/capsule region');
+    for (const [role, circle] of Object.entries(state.controls)) {
+      const x = Math.max(pause.x, Math.min(circle.x, pause.x + pause.w));
+      const y = Math.max(pause.y, Math.min(circle.y, pause.y + pause.h));
+      assert.ok(Math.hypot(x - circle.x, y - circle.y) >= circle.r, `Pause never blocks the ${role} circle`);
+    }
+    for (const button of state.buttons.filter(button => button !== pause && !button.role)) {
+      assert.ok(separateRectangles(pause, button), `Pause never blocks ${button.label}`);
+    }
+    if (state.weaponPicker) assert.ok(separateRectangles(pause, { x: 24, y: 156, w: 326, h: 196 }), 'Expanded weapon library leaves pause unobstructed');
+  };
   const checkCombatLayout = state => {
     const picker = state.buttons.find(button => button.label === '切换武器');
     assert.ok(picker, 'The compact weapon HUD has one large picker entry');
     assert.ok(picker.w * state.layout.scale >= 44 && picker.h * state.layout.scale >= 44, 'Weapon picker has a usable touch area');
     assert.equal(state.weaponPicker, false, 'Weapon choices stay collapsed during combat');
-    const pause = state.buttons.find(button => button.label.includes('暂停'));
-    assert.ok(picker.x + picker.w <= state.layout.w / 2 - 124 && state.layout.w / 2 + 124 <= pause.x,
-      'Weapon stats, central wave HUD, and pause remain separated across landscape aspect ratios');
-    const circles = ['move', 'fire', 'reload', 'grenade', 'weapon'].map(role => ({ role, ...state.controls[role] }));
+    checkPausePlacement(state);
+    assert.equal(state.controls.reload, undefined, 'The manual reload control has been replaced');
+    const circles = ['move', 'fire', 'boost', 'grenade', 'weapon'].map(role => ({ role, ...state.controls[role] }));
     for (const circle of circles) {
       assert.ok(circle.x - circle.r >= 0 && circle.y - circle.r >= 0 && circle.x + circle.r <= state.layout.w && circle.y + circle.r <= state.layout.h,
         `${circle.role} must remain inside combat bounds`);
@@ -104,6 +123,7 @@ try {
   };
   const checkWeaponPicker = state => {
     assert.equal(state.weaponPicker, true);
+    checkPausePlacement(state);
     const cards = gunLabels.map(label => state.buttons.find(button => button.label === label));
     assert.ok(cards.every(Boolean), 'Opening the picker offers all six weapon choices');
     for (const card of cards) {
@@ -169,16 +189,25 @@ try {
   const grenadeCount = state.game.player.grenades;
   await page.keyboard.press('g'); await page.waitForTimeout(100);
   state = await snapshot(); assert.equal(state.game.player.grenades, grenadeCount - 1); assert.ok(state.game.grenadeCount > 0);
-  await page.keyboard.press('r'); await page.waitForTimeout(100); assert.ok((await snapshot()).game.player.weapons.pistol.reloadRemaining > 0);
+  const clipBeforeBurst = state.game.player.weapons.pistol.clip;
+  assert.equal(state.game.player.boostCharges, 1);
+  await page.keyboard.press('r'); await page.waitForTimeout(100);
+  state = await snapshot();
+  assert.equal(state.game.player.boostCharges, 0, 'R consumes one burst charge');
+  assert.ok(state.game.player.boostRemaining > 7.7);
+  assert.equal(state.game.player.weapons.pistol.reloadRemaining, 0, 'R no longer manually reloads');
+  assert.equal(state.game.player.weapons.pistol.clip, clipBeforeBurst);
   await page.keyboard.press('Escape'); state = await snapshot(); assert.equal(state.paused, true);
   assert.equal(state.audio.activeVoices, 0, 'Pause stops all audible combat voices');
   await clickLabel('音效：开');
   assert.equal((await snapshot()).settings.muted, true);
   await clickLabel('音效：关');
   const frozenTime = state.game.time;
+  const frozenBurst = state.game.player.boostRemaining;
   await page.waitForTimeout(300); assert.equal((await snapshot()).game.time, frozenTime, 'Pause must stop simulation');
+  assert.equal((await snapshot()).game.player.boostRemaining, frozenBurst, 'Pause preserves burst time');
   await clickLabel('继续突围'); await page.waitForTimeout(1100);
-  assert.equal((await snapshot()).game.player.weapons.pistol.clip, 12, 'Reload should finish after resume');
+  assert.equal((await snapshot()).game.player.weapons.pistol.clip, clipBeforeBurst, 'Burst preserves the magazine when no shot is held');
   await page.screenshot({ path: 'artifacts/arena.png' });
   await page.keyboard.press('Escape'); await clickLabel('重新开始');
   state = await snapshot(); assert.equal(state.game.wave, 1); assert.equal(state.game.player.grenades, 3); assert.equal(state.game.player.shield, 35);
@@ -256,7 +285,7 @@ try {
     assert.ok(Math.abs(ms.layout.ox) < 1 && Math.abs(ms.layout.oy) < 1, 'Mobile combat has no letterboxing');
     assert.ok(Math.abs(ms.arena.w * ms.layout.scale - width) < 1 && Math.abs(ms.arena.h * ms.layout.scale - height) < 1,
       'Mobile arena fills the entire screen');
-    const { move, fire, reload, grenade } = ms.controls;
+    const { move, fire, boost, grenade } = ms.controls;
     const mobileX = ms.game.player.x;
     const { ox, oy, scale } = ms.layout;
     const cdp = await mobile.context().newCDPSession(mobile);
@@ -279,6 +308,16 @@ try {
     ms = await mobileSnapshot();
     assert.ok(ms.grenadeAim && ms.grenadeAim.y < ms.game.player.y, 'dragging chooses a visible world landing above the player');
     assert.equal(ms.grenadeAim.range, 135);
+    const beforeBurstX = ms.game.player.x, beforeBurstAmmo = ms.game.player.weapons.pistol.clip;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [moved, heldFire, aimedGrenade, t(boost.x, boost.y, 4)] });
+    await mobile.waitForTimeout(80);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [t(boost.x, boost.y, 4)] });
+    ms = await mobileSnapshot();
+    assert.equal(ms.game.player.boostCharges, 0, 'A fourth finger spends the stored burst charge');
+    assert.ok(ms.game.player.boostRemaining > 7.7 && ms.grenadeAim, 'Burst leaves the grenade landing preview active');
+    assert.ok(ms.game.player.x > beforeBurstX, 'Burst leaves movement held');
+    await mobile.waitForTimeout(150);
+    assert.ok((await mobileSnapshot()).game.player.weapons.pistol.clip < beforeBurstAmmo, 'Burst leaves fire held');
     await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-grenade-aim.png` });
     // CDP touchEnd names the contacts being lifted, rather than the survivors.
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [aimedGrenade] });
@@ -288,13 +327,17 @@ try {
     const ammoAfterRelease = (await mobileSnapshot()).game.player.weapons.pistol.clip;
     await mobile.waitForTimeout(300);
     assert.equal((await mobileSnapshot()).game.player.weapons.pistol.clip, ammoAfterRelease, 'Releasing all touches stops fire');
-    await mobile.touchscreen.tap(ox + reload.x * scale, oy + reload.y * scale);
+    await tapMobileLabel('Ⅱ 暂停');
+    const pausedBurst = (await mobileSnapshot()).game.player.boostRemaining;
+    await mobile.waitForTimeout(180);
+    assert.equal((await mobileSnapshot()).game.player.boostRemaining, pausedBurst, 'Relocated pause freezes burst duration');
+    await tapMobileLabel('继续突围');
+    await mobile.touchscreen.tap(ox + boost.x * scale, oy + boost.y * scale);
     await mobile.waitForTimeout(100);
     ms = await mobileSnapshot();
-    assert.ok(ms.game.player.weapons.pistol.reloadRemaining > 0, 'Circular reload touch starts reloading');
-    await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-reload.png` });
-    await mobile.waitForTimeout(900);
-    assert.equal((await mobileSnapshot()).game.player.weapons.pistol.clip, 12, 'Reload completes after tapping its circle');
+    assert.equal(ms.game.player.boostCharges, 0, 'An empty burst control never spends additional inventory');
+    assert.equal(ms.game.player.weapons.pistol.clip, ammoAfterRelease, 'Empty burst use does not reload or fire');
+    await mobile.screenshot({ path: `artifacts/mobile-${width}x${height}-burst.png` });
     await mobile.screenshot({ path: width === 844 ? 'artifacts/mobile.png' : `artifacts/mobile-${width}x${height}.png` });
     ms = await mobileSnapshot();
     assert.ok(ms.buttons.every(button => ms.layout.oy + (button.y + button.h) * ms.layout.scale <= height
@@ -307,12 +350,12 @@ try {
     await mobile.setViewportSize({ width, height });
     await mobile.waitForTimeout(100);
     const returned = await mobileSnapshot();
-    assert.equal(returned.game.player.weapons.pistol.clip, 12, 'Rotation does not leave fire held');
+    assert.equal(returned.game.player.weapons.pistol.clip, ammoAfterRelease, 'Rotation does not leave fire held');
     await mobile.close();
   }
   assert.deepEqual(errors, [], 'Browser must not raise runtime errors');
-  console.log('浏览器检查通过：工坊默认/回廊地图、难度选择/持久化/重开、真实字体边界、武器库、多指移动+开火+投雷、暂停/重开、三种手机/两种平板横屏尺寸、横竖屏。');
-  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/candy-corridor.png、artifacts/mobile.png、artifacts/mobile-*-grenade-aim.png、artifacts/mobile-*-reload.png、artifacts/mobile-*-weapons.png');
+  console.log('浏览器检查通过：工坊默认/回廊地图、难度持久化/重开、真实字体边界、武器库、四指移动+开火+投雷+爆发、暂停位置/冻结爆发、三种手机/两种平板横屏尺寸、横竖屏。');
+  console.log('截图：artifacts/menu.png、artifacts/arena.png、artifacts/candy-corridor.png、artifacts/mobile.png、artifacts/mobile-*-grenade-aim.png、artifacts/mobile-*-burst.png、artifacts/mobile-*-weapons.png');
 } finally {
   await browser?.close();
   server.kill();
