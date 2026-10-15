@@ -32,21 +32,37 @@ function harness(options = {}) {
   return { app, frame, tap, calls, writes, texts, get callbacks() { return callbacks; } };
 }
 
-for (const [width, height] of [[844, 390], [667, 375], [1024, 768]]) {
-  test(`menu keeps balanced typography and generous difficulty touch targets at ${width}×${height}`, () => {
-    const h = harness({ width, height }), state = h.app.getSnapshot();
+const menuViewports = [[640, 320], [740, 360], [844, 390], [932, 430], [1024, 768]];
+const cssTextSize = (h, label) => {
+  const draw = h.texts.find(item => item.value === label);
+  assert.ok(draw, `${label} is visible`);
+  return Number(/([\d.]+)px/.exec(draw.font)[1]) * h.app.getSnapshot().layout.scale;
+};
+const expectTextSize = (h, label, minimum, maximum) => {
+  const size = cssTextSize(h, label);
+  assert.ok(size >= minimum - .01 && size <= maximum + .01, `${label} has ${size.toFixed(2)} CSS px text, expected ${minimum}–${maximum}`);
+};
+const expectTouchSize = (state, label, minimum = 48) => {
+  const button = state.buttons.find(item => item.label === label);
+  assert.ok(button, `${label} has an active touch target`);
+  assert.ok(button.w * state.layout.scale >= minimum - .01 && button.h * state.layout.scale >= minimum - .01,
+    `${label} retains a ${minimum} CSS px touch target`);
+};
+
+for (const [width, height] of menuViewports) for (const pixelRatio of [1, 2, 3]) {
+  test(`menu typography and touch targets use screen pixels at ${width}×${height}, DPR ${pixelRatio}`, () => {
+    const h = harness({ width, height, pixelRatio }), state = h.app.getSnapshot();
     const solo = state.buttons.find(item => item.label === '开始突围'), coop = state.buttons.find(item => item.label === '双人合作');
     assert.equal(solo.w, coop.w); assert.equal(solo.h, coop.h);
-    assert.ok(coop.h * state.layout.scale >= 44);
+    expectTextSize(h, '双人合作', 24, 28); expectTextSize(h, '开始突围', 24, 28);
+    expectTouchSize(state, '双人合作'); expectTouchSize(state, '开始突围');
     for (const label of ['休闲', '标准', '挑战']) {
       const draw = h.texts.find(item => item.value === label);
-      const [, weight, size] = /^(\d+) (\d+)px/.exec(draw.font);
-      const physicalSize = Number(size) * state.layout.scale;
+      const [, weight] = /^(\d+) ([\d.]+)px/.exec(draw.font);
       assert.ok(Number(weight) <= 700, 'secondary choices do not use headline weight');
-      assert.ok(physicalSize >= 16 && physicalSize <= 20, 'difficulty text stays readable without dominating');
-      const target = state.buttons.find(item => item.label === label);
-      assert.ok(target.h * state.layout.scale >= 44, 'a smaller label retains a generous tap target');
+      expectTextSize(h, label, 18, 20); expectTouchSize(state, label, 44);
     }
+    for (const label of ['操作指南', '音效：开']) expectTouchSize(state, label, 44);
     for (const button of state.buttons) {
       assert.ok(button.x >= 0 && button.y >= 0 && button.x + button.w <= state.layout.w && button.y + button.h <= state.layout.h);
       const right = state.layout.ox + (button.x + button.w) * state.layout.scale;
@@ -55,22 +71,47 @@ for (const [width, height] of [[844, 390], [667, 375], [1024, 768]]) {
     }
   });
 
-  test(`cooperation entries and room-code label stay readable at ${width}×${height}`, () => {
-    const h = harness({ width, height });
-    const readable = (label, minimum) => {
-      const draw = h.texts.find(item => item.value === label);
-      assert.ok(draw, `${label} is visible`);
-      const size = Number(/(\d+)px/.exec(draw.font)[1]) * h.app.getSnapshot().layout.scale;
-      assert.ok(size >= minimum, `${label} has at least ${minimum} CSS px text`);
-    };
-    readable('双人合作', 20);
+  test(`cooperation entries, keypad and room remain readable at ${width}×${height}, DPR ${pixelRatio}`, () => {
+    const h = harness({ width, height, pixelRatio });
     h.tap('双人合作');
-    readable('创建房间', 20); readable('输入房间码加入', 20);
+    for (const label of ['创建房间', '输入房间码加入']) {
+      expectTextSize(h, label, 24, 28); expectTouchSize(h.app.getSnapshot(), label);
+    }
+    expectTouchSize(h.app.getSnapshot(), '返回战区', 44);
+    h.tap('输入房间码加入');
+    for (const label of ['1', '2', '3', '4', '5', '6', '7', '8', '9', '删除', '0']) {
+      expectTouchSize(h.app.getSnapshot(), label);
+    }
+    for (const digit of '123456') h.tap(digit);
+    expectTouchSize(h.app.getSnapshot(), '加入房间');
+    h.tap('返回战区'); h.tap('双人合作');
     h.tap('创建房间');
     h.callbacks.onRoom({ playerId: 'p1', hostId: 'p1', code: '123456', mapId: 'greenhouse', difficultyId: 'easy',
       players: [{ id: 'p1', connected: true }] });
     h.frame();
-    readable('房间码', 18);
+    expectTextSize(h, '房间码', 20, 22);
+    h.callbacks.onRoom({ playerId: 'p1', hostId: 'p1', code: '123456', mapId: 'greenhouse', difficultyId: 'easy',
+      players: [{ id: 'p1', connected: true }, { id: 'p2', connected: true }] });
+    h.frame();
+    expectTextSize(h, '开始双人突围', 24, 28); expectTouchSize(h.app.getSnapshot(), '开始双人突围');
+  });
+}
+
+for (const [width, height] of menuViewports) {
+  test(`DPR changes backing resolution without changing UI size at ${width}×${height}`, () => {
+    const physical = pixelRatio => {
+      const h = harness({ width, height, pixelRatio });
+      const capture = () => ({
+        texts: h.texts.map(draw => ({ label: draw.value, size: cssTextSize(h, draw.value) })),
+        buttons: h.app.getSnapshot().buttons.map(button => ({ label: button.label,
+          width: button.w * h.app.getSnapshot().layout.scale, height: button.h * h.app.getSnapshot().layout.scale })),
+      });
+      const menu = capture(); h.tap('双人合作');
+      const coop = capture(); h.tap('输入房间码加入');
+      return { menu, coop, keypad: capture() };
+    };
+    const baseline = physical(1);
+    assert.deepEqual(physical(2), baseline); assert.deepEqual(physical(3), baseline);
   });
 }
 
