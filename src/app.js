@@ -18,7 +18,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   let grenadePointer = null;
   let network = null, connectionId = 0;
   let backgrounded = false, backgroundPauseRequested = false;
-  let coop = { view: 'select', code: '', room: null, message: '' };
+  let coop = { view: 'select', code: '', room: null, message: '', connecting: false };
   let best = { wave: 0, score: 0 };
   const frameStats = { fps: null, frameMs: null, elapsed: 0, frames: 0 };
   let muted = false, aimAssist = true, selectedDifficulty = 'easy', facing = -Math.PI / 2, aimManual = false;
@@ -121,7 +121,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     screen = 'game'; paused = false; help = false; resultSaved = false; lastTimestamp = null;
     resize(size); toast = selectedMap === 'greenhouse' ? '打爆油桶清怪 · 踩箭头加速带' : '绕中心岛突围 · 走加速通道'; toastUntil = clock + 3;
   }
-  function disconnect() { connectionId += 1; backgroundPauseRequested = false; const client = network; network = null; client?.close(); }
+  function disconnect() { connectionId += 1; coop.connecting = false; backgroundPauseRequested = false; const client = network; network = null; client?.close(); }
   function menu() { disconnect(); audio?.pause(); screen = 'menu'; game = null; paused = false; help = false; resize(size); }
   function ensureBackgroundPause() {
     if (!backgrounded || !network) return;
@@ -159,18 +159,18 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
 
   function openCoop() {
     disconnect(); game = null; screen = 'coop'; paused = false; help = false;
-    coop = { view: 'select', code: '', room: null, message: '' }; resize(size);
+    coop = { view: 'select', code: '', room: null, message: '', connecting: false }; resize(size);
   }
   function connectCoop(join = false) {
-    if (coop.view === 'connecting' || join && !/^\d{6}$/.test(coop.code)) return;
+    if (screen !== 'coop' || coop.view !== (join ? 'join' : 'select') || coop.connecting || join && !/^\d{6}$/.test(coop.code)) return;
     disconnect(); const id = connectionId;
-    coop.view = 'connecting'; coop.message = '';
+    coop.connecting = true; coop.message = '';
     const current = () => id === connectionId;
     network = multiplayerFactory({ platform, wxApi,
       onRoom(room) {
         if (!current()) return;
         coop.room = { ...room, players: room.players?.map(({ id, connected }) => ({ id, connected })) };
-        coop.view = 'room'; coop.message = '';
+        coop.view = 'room'; coop.message = ''; coop.connecting = false;
         if (game?.online) {
           const wasPaused = paused; paused = room.paused === true || room.phase === 'paused' || backgrounded || backgroundPauseRequested;
           if (paused && !wasPaused) { audio?.pause(); clearInput(); }
@@ -180,6 +180,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       },
       onSnapshot(view, tick) {
         if (!current() || !view?.player || !view?.map) return;
+        coop.connecting = false;
         if (!game?.online) {
           game = new NetworkGame(network, view, tick); screen = 'game';
           facing = game.player.angle; resultSaved = false; lastTimestamp = null; audio?.unlock(); resize(size);
@@ -364,17 +365,12 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
         const x = panelX + 30 + index % 3 * 155, y = panelY + 159 + Math.floor(index / 3) * 57;
         const join = value === '加入房间';
         button(x, y, 145, 47, value, () => {
+          if (screen !== 'coop' || coop.view !== 'join' || coop.connecting) return;
           if (join) connectCoop(true);
           else if (value === '删除') coop.code = coop.code.slice(0, -1);
           else if (coop.code.length < 6) coop.code += value;
-        }, { fontSize: value.length > 1 ? 23 : 27, fill: join && coop.code.length === 6 ? C.lime : '#182c31', color: join && coop.code.length === 6 ? C.bg : C.ink, active: !join || coop.code.length === 6 });
+        }, { fontSize: value.length > 1 ? 23 : 27, fill: join && coop.code.length === 6 ? C.lime : '#182c31', color: join && coop.code.length === 6 ? C.bg : C.ink, active: !coop.connecting && (!join || coop.code.length === 6) });
       });
-      return;
-    }
-    if (coop.view === 'connecting') {
-      text('正在连接联机服务…', cx, panelY + 175, 25, C.teal, 700, 'center');
-      text('首次启动云端服务可能需要片刻', cx, panelY + 224, 18, C.muted, 650, 'center');
-      button(panelX + 50, panelY + 328, 420, 54, '取消连接', openCoop, { fontSize: menuFont(26) });
       return;
     }
     if (coop.view === 'error') {
@@ -400,8 +396,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     }
     text('和朋友一起守住战场', cx, panelY + 94, 23, C.teal, 750, 'center');
     text(`${mapLabels[selectedMap]?.[0]} · ${DIFFICULTIES[selectedDifficulty].label}`, cx, panelY + 144, 21, C.muted, 650, 'center');
-    button(panelX + 50, panelY + 205, 420, 60, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(28) });
-    button(panelX + 50, panelY + 284, 420, 60, '输入房间码加入', () => { coop.view = 'join'; coop.code = ''; }, { fill: '#2d4842', border: '#688a77', color: C.teal, fontSize: menuFont(28) });
+    button(panelX + 50, panelY + 205, 420, 60, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(28), active: !coop.connecting });
+    button(panelX + 50, panelY + 284, 420, 60, '输入房间码加入', () => { if (screen === 'coop' && coop.view === 'select' && !coop.connecting) { coop.view = 'join'; coop.code = ''; } }, { fill: '#2d4842', border: '#688a77', color: C.teal, fontSize: menuFont(28), active: !coop.connecting });
   }
   function bar(x, y, w, value, max, color) { rounded(x, y, w, 7, 3, '#34464a'); if (value > 0) rounded(x, y, Math.max(6, w * clamp(value / max, 0, 1)), 7, 3, color); }
   function drawHUD() {
@@ -600,8 +596,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (type === 'up') { keys.delete(k); return; }
     audio?.unlock();
     if (screen === 'coop') {
-      if (k === 'Escape') { if (coop.view === 'join') coop.view = 'select'; else menu(); }
-      else if (coop.view === 'join') {
+      if (k === 'Escape') { if (coop.view === 'join') openCoop(); else menu(); }
+      else if (coop.view === 'join' && !coop.connecting) {
         if (/^\d$/.test(k) && coop.code.length < 6) coop.code += k;
         if (k === 'Backspace') coop.code = coop.code.slice(0, -1);
         if (k === 'Enter') connectCoop(true);

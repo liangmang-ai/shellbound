@@ -345,8 +345,9 @@ test('network metrics measure accepted snapshot bytes, intervals and paired hear
 });
 
 function appHarness() {
-  const context = new Proxy({ measureText: value => ({ width: String(value).length * 8 }), createRadialGradient: () => ({ addColorStop() {} }) }, { get: (object, key) => object[key] || (() => {}) });
-  const calls = [], clients = [], stored = [];
+  const calls = [], clients = [], stored = [], texts = [];
+  const context = new Proxy({ measureText: value => ({ width: String(value).length * 8 }), createRadialGradient: () => ({ addColorStop() {} }),
+    fillText: value => texts.push(String(value)) }, { get: (object, key) => object[key] || (() => {}) });
   const app = createApp({ canvas: { getContext: () => context }, width: 844, height: 390,
     storage: { getItem: () => null, setItem: (...value) => stored.push(value) },
     multiplayerFactory(options) {
@@ -354,7 +355,7 @@ function appHarness() {
       clients.push(client); return client;
     } });
   let time = 0;
-  const frame = () => app.frame(time += 16);
+  const frame = () => { texts.length = 0; app.frame(time += 16); };
   const tap = label => {
     frame(); const value = app.getSnapshot().buttons.find(button => button.label === label);
     assert.ok(value, `visible ${label}`);
@@ -363,8 +364,103 @@ function appHarness() {
     app.handlePointer('up', { x: 0, y: 0, button: 0 }); frame();
   };
   frame(); tap('双人合作');
-  return { app, frame, tap, calls, clients, stored };
+  return { app, frame, tap, calls, clients, stored, texts };
 }
+
+const setupRoomRequest = (h, join) => {
+  if (!join) return '创建房间';
+  h.tap('输入房间码加入');
+  for (const digit of '123456') h.tap(digit);
+  return '加入房间';
+};
+const tapOldBounds = (h, button, render = true) => {
+  const { layout } = h.app.getSnapshot();
+  h.app.handlePointer('down', { x: layout.ox + (button.x + button.w / 2) * layout.scale,
+    y: layout.oy + (button.y + button.h / 2) * layout.scale, button: 0 });
+  h.app.handlePointer('up', { x: 0, y: 0, button: 0 });
+  if (render) h.frame();
+};
+
+test('creating and joining wait on the original page without connection explanations or duplicate requests', () => {
+  for (const join of [false, true]) for (const immediate of [false, true]) {
+    const h = appHarness(), action = setupRoomRequest(h, join), before = [...h.texts];
+    const controls = h.app.getSnapshot().buttons.filter(button => button.label !== '返回地图选择');
+    tapOldBounds(h, controls.find(button => button.label === action), false);
+    // Touch callbacks from the old frame must respect the lock before the next
+    // render has removed their hit targets.
+    for (const button of controls) tapOldBounds(h, button, false);
+    for (const key of ['Enter', 'Enter', 'Backspace', '9']) h.app.handleKey('down', key);
+    if (!immediate) {
+      h.frame();
+      assert.equal(h.app.getSnapshot().coop.view, join ? 'join' : 'select');
+      assert.deepEqual(h.texts, before, 'pending requests add no intermediate screen or server text');
+      assert.deepEqual(h.app.getSnapshot().buttons.map(button => button.label), ['返回地图选择'], 'only cancellation remains actionable');
+      for (const button of controls) tapOldBounds(h, button);
+    }
+    assert.equal(h.clients.length, 1);
+    assert.deepEqual(h.calls, [join ? ['join', '123456'] : ['create', 'greenhouse', 'easy']]);
+    assert.equal(h.app.getSnapshot().coop.code, join ? '123456' : '');
+    h.clients[0].options.onRoom({ ...room, playerId: join ? 'p2' : 'p1', phase: 'waiting',
+      players: join ? room.players : [{ id: 'p1', connected: true }] });
+    for (const button of controls) tapOldBounds(h, button, false);
+    for (const key of ['Enter', 'Backspace', '9']) h.app.handleKey('down', key);
+    assert.equal(h.clients.length, 1, 'an immediate acknowledgement cannot make old controls reconnect');
+    assert.deepEqual(h.calls, [join ? ['join', '123456'] : ['create', 'greenhouse', 'easy']]);
+    assert.equal(h.app.getSnapshot().coop.code, join ? '123456' : '');
+    assert.equal(h.app.getSnapshot().coop.view, 'room');
+    assert.equal(h.app.getSnapshot().coop.connecting, false);
+    h.frame();
+    assert.ok(h.texts.includes(join ? '等待房主开始' : '等待队友加入'), 'success goes directly to the waiting room');
+  }
+});
+
+test('cancelling pending room requests ignores late callbacks and allows a fresh request', () => {
+  for (const join of [false, true]) {
+    const h = appHarness(), action = setupRoomRequest(h, join); h.tap(action);
+    const old = h.clients[0];
+    if (join) { h.app.handleKey('down', 'Escape'); h.frame(); }
+    else h.tap('返回地图选择');
+    const cancelled = h.app.getSnapshot();
+    assert.equal(cancelled.screen, join ? 'coop' : 'menu');
+    assert.equal(cancelled.coop.connecting, false);
+    if (join) assert.equal(cancelled.coop.view, 'select');
+    assert.equal(h.calls.filter(call => call[0] === 'close').length, 1);
+    if (!join) h.tap('双人合作');
+    h.tap(setupRoomRequest(h, join));
+    old.options.onRoom(room); old.options.onSnapshot(fixture(), 1);
+    old.options.onError('旧连接失败'); old.options.onEnd('旧房间已结束'); h.frame();
+    assert.equal(h.clients.length, 2);
+    assert.equal(h.app.getSnapshot().screen, 'coop');
+    assert.equal(h.app.getSnapshot().coop.view, join ? 'join' : 'select');
+    assert.equal(h.app.getSnapshot().coop.connecting, true, 'late callbacks cannot release the new request lock');
+    assert.equal(h.app.getSnapshot().game, null);
+    h.clients[1].options.onRoom({ ...room, phase: 'waiting' }); h.frame();
+    assert.equal(h.app.getSnapshot().coop.view, 'room');
+    assert.equal(h.app.getSnapshot().coop.connecting, false);
+  }
+});
+
+test('failed create and join requests release controls for retry', () => {
+  for (const join of [false, true]) {
+    const h = appHarness(), action = setupRoomRequest(h, join);
+    const controls = h.app.getSnapshot().buttons.filter(button => button.label !== '返回地图选择');
+    tapOldBounds(h, controls.find(button => button.label === action), false);
+    h.clients[0].options.onError('连接失败，请重试');
+    for (const button of controls) tapOldBounds(h, button, false);
+    for (const key of ['Enter', 'Backspace', '9']) h.app.handleKey('down', key);
+    assert.equal(h.clients.length, 1, 'old controls cannot retry before the error screen is rendered');
+    assert.deepEqual(h.calls, [join ? ['join', '123456'] : ['create', 'greenhouse', 'easy'], ['close']]);
+    assert.equal(h.app.getSnapshot().coop.code, join ? '123456' : '');
+    assert.equal(h.app.getSnapshot().coop.view, 'error');
+    assert.equal(h.app.getSnapshot().coop.connecting, false);
+    h.frame();
+    assert.ok(h.texts.includes('连接失败，请重试'), 'actionable failures remain visible');
+    h.tap('重新创建或加入'); h.tap(setupRoomRequest(h, join));
+    assert.equal(h.clients.length, 2);
+    assert.equal(h.app.getSnapshot().coop.connecting, true);
+    assert.equal(h.calls.filter(call => call[0] === (join ? 'join' : 'create')).length, 2);
+  }
+});
 
 test('co-op menu creates rooms, waits for host start and can leave without stale re-entry', () => {
   const h = appHarness(); h.tap('创建房间');
