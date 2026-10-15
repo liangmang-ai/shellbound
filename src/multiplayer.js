@@ -85,12 +85,16 @@ export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.w
   // Do not surface arbitrary SDK text: it may contain URLs or identity headers.
   // Preserve documented error codes and known gateway tokens for diagnosis.
   function errorCode(error) {
+    if (Number.isInteger(error?.statusCode)) return `HTTP_${error.statusCode}`;
+    // SocketTask.onError only guarantees errMsg. Handshake status may be
+    // embedded there, even when the SDK also supplies a generic error code.
+    const message = String(error?.errMsg || error?.message || '');
+    const status = /\b(?:HTTP\/[12](?:\.\d)?|unexpected (?:server )?response(?: code)?|(?:response )?status\s*code)\s*[:=]?\s*([45]\d{2})\b/i.exec(message);
+    if (status) return `HTTP_${status[1]}`;
     for (const value of [error?.errCode, error?.code]) {
       if (typeof value === 'number' && Number.isFinite(value)) return String(value);
       if (typeof value === 'string' && /^(?:-?\d+|[A-Z][A-Z0-9_]{1,40})$/.test(value)) return value;
     }
-    if (Number.isInteger(error?.statusCode)) return `HTTP_${error.statusCode}`;
-    const message = String(error?.errMsg || error?.message || '');
     return ['SERVICE_NOT_READY', 'SERVICE_FORBIDDEN', 'INTERNAL_REQUEST_FAIL', 'SYS_ERR'].find(code => message.includes(code)) || 'UNKNOWN';
   }
   function connectionProblem(stage, error) {
@@ -105,7 +109,9 @@ export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.w
       retryTimer = setTimeout(() => { retryTimer = null; void openWeChatAttempt(); }, retryDelayMs);
       return;
     }
-    const advice = ['-501000', '-601031', '-601034', 'HTTP_401', 'HTTP_403'].includes(code)
+    const advice = ['HTTP_409', '409'].includes(code)
+      ? '该微信已在其他地方联机；请退出另一端，双人需用不同微信账号'
+      : ['-501000', '-601031', '-601034', 'HTTP_401', 'HTTP_403'].includes(code)
       ? '请检查云托管环境与身份权限'
       : code === 'SERVICE_NOT_READY' ? '服务仍在启动，请稍后重试'
         : ['102002', 'TIMEOUT'].includes(code) ? '等待超时，请稍后重试'

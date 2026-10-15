@@ -488,6 +488,41 @@ function wxSocket() {
     send({ data }) { sent.push(JSON.parse(data)); }, close() { this.closed++; handlers.close?.({ code: 1000 }); },
     message(value) { handlers.message?.({ data: JSON.stringify(value) }); } };
 }
+
+test('WeChat handshake messages identify a duplicate account without exposing raw connection data or retrying', async () => {
+  for (const error of [
+    { errMsg: 'connectSocket:fail Error during WebSocket handshake: Unexpected response code: 409' },
+    { errMsg: 'Unexpected server response: 409; wss://private.example/?token=secret' },
+    { errCode: -1, errMsg: 'HTTP/1.1 409 Conflict private-openid' },
+    { errMsg: 'response status code: 409' },
+    { errMsg: 'statusCode: 409' },
+    { statusCode: 409 },
+  ]) {
+    const task = wxSocket(), errors = [], details = [];
+    let attempts = 0;
+    const wxApi = { cloud: { init() {}, async connectContainer() { attempts++; return { socketTask: task }; } } };
+    const client = createMultiplayerClient({ platform: 'wechat', wxApi,
+      onError: (message, detail) => { errors.push(message); details.push(detail); } });
+    try {
+      await client.join('123456'); task.handlers.error(error);
+      assert.equal(attempts, 1); assert.equal(task.sent.length, 0); assert.equal(task.closed, 1);
+      assert.equal(errors.length, 1); assert.match(errors[0], /HTTP_409.*不同微信账号/);
+      assert.doesNotMatch(errors[0], /secret|private|wss:/);
+      assert.deepEqual(details, [{ stage: '连接握手', code: 'HTTP_409', attempts: 1 }]);
+    } finally { client.close(); }
+  }
+});
+
+test('a 409 inside an address or identifier is not treated as a duplicate-account response', async () => {
+  const task = wxSocket(), errors = [];
+  const wxApi = { cloud: { init() {}, connectContainer: async () => ({ socketTask: task }) } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, onError: message => errors.push(message) });
+  try {
+    await client.join('123456'); task.handlers.error({ errMsg: 'connectSocket:fail wss://host409.example/ws?request=409' });
+    assert.match(errors[0], /UNKNOWN/); assert.doesNotMatch(errors[0], /不同微信账号|host409/);
+  } finally { client.close(); }
+});
+
 function controlledTimeouts(t) {
   let clock = 0, sequence = 0;
   const pending = new Map();
