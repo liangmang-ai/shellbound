@@ -10,6 +10,9 @@ export async function buildProject({ webOutput = resolve(root, 'dist/web'), wech
   // An imported WeChat output can also contain the user's Git repository and
   // developer-tool settings. Only refresh our generated files inside that folder.
   await rm(webOutput, { recursive: true, force: true });
+  // Remove the former generated social entry when rebuilding an imported
+  // project, while preserving any other files in that directory.
+  await rm(resolve(wechatOutput, 'open-data/index.js'), { force: true });
   await Promise.all([
     mkdir(webOutput, { recursive: true }),
     mkdir(wechatOutput, { recursive: true }),
@@ -33,15 +36,6 @@ export async function buildProject({ webOutput = resolve(root, 'dist/web'), wech
       format: 'iife',
       target: 'es2019',
       outfile: resolve(wechatOutput, 'game.js'),
-      legalComments: 'none',
-    }),
-    build({
-      absWorkingDir: root,
-      entryPoints: ['wechat/open-data/index.js'],
-      bundle: true,
-      format: 'iife',
-      target: 'es2019',
-      outfile: resolve(wechatOutput, 'open-data/index.js'),
       legalComments: 'none',
     }),
     copyFile(resolve(root, 'web/index.html'), resolve(webOutput, 'index.html')),

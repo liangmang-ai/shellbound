@@ -87,30 +87,30 @@ async function startedPair(t, options) {
   return context;
 }
 
-test('room display profiles are bounded, optional and never expose gateway identity or session fields', async t => {
-  let time = 10000;
-  const profile = { nickName: '蛋友🥚', avatarUrl: 'https://thirdwx.qlogo.cn/mmopen/avatar/132', openId: 'private-openid', sessionKey: 'private-session' };
-  const { host, guest, room } = await roomPair(t, { now: () => time }, { host: { profile } });
-  guest.send({ type: 'profile', profile: { nickName: '队友', avatarUrl: 'https://attacker.test/private.png' } });
-  const joined = await host.next(message => message.type === 'room' && message.players[1]?.profile?.nickName === '队友');
-  assert.match(joined.runId, /^[a-f0-9]{24}$/, 'a shared opaque run marker distinguishes reused room codes');
-  assert.equal(joined.runId, room.runId);
-  const guestRoom = await guest.next(message => message.type === 'room' && message.players[1]?.profile?.nickName === '队友');
-  assert.equal(guestRoom.runId, joined.runId, 'both teammates submit the same run marker');
-  assert.deepEqual(joined.players[0].profile, { nickName: '蛋友🥚', avatarUrl: profile.avatarUrl });
-  assert.deepEqual(joined.players[1].profile, { nickName: '队友', avatarUrl: '' });
-  assert.equal(JSON.stringify(joined).includes('private-'), false);
-  assert.deepEqual(Object.keys(joined.players[0]).sort(), ['connected', 'id', 'profile']);
-  guest.send({ type: 'profile', profile: { nickName: '过快更改' } });
-  assert.match((await guest.next('error')).message, /太快/);
-  assert.equal([...room.members.values()][1].profile.nickName, '队友');
-  guest.send({ type: 'profile', profile: null });
-  const cleared = await host.next(message => message.type === 'room' && message.players[1]?.profile === null);
-  assert.equal(cleared.players[1].profile, null, 'clearing consent is allowed immediately');
-  time += 2001;
-  guest.send({ type: 'profile', profile: { nickName: '新队友' } });
-  const updated = await host.next(message => message.type === 'room' && message.players[1]?.profile?.nickName === '新队友');
-  assert.equal(updated.players[0].profile.nickName, '蛋友🥚', 'a participant only edits their own display data');
+test('retired display metadata is discarded while legacy clients can still join and play', async t => {
+  const profile = { nickName: '旧昵称', avatarUrl: 'https://thirdwx.qlogo.cn/mmopen/avatar/132', openId: 'private-openid', sessionKey: 'private-session' };
+  const { host, guest, room } = await roomPair(t, {}, { host: { profile }, guest: { profile } });
+  for (const member of room.members.values()) {
+    assert.equal(Object.hasOwn(member, 'profile'), false);
+    assert.equal(Object.hasOwn(member, 'profileUpdatedAt'), false);
+  }
+  const returned = [...host.messages, ...guest.messages].filter(message => message.type === 'room');
+  host.send({ type: 'profile', profile });
+  guest.send({ type: 'profile', profile });
+  await Promise.all([host.barrier(), guest.barrier()]);
+  assert.equal(host.messages.some(message => message.type === 'error'), false);
+  assert.equal(guest.messages.some(message => message.type === 'error'), false);
+  assert.equal(host.messages.filter(message => message.type === 'room').length + guest.messages.filter(message => message.type === 'room').length, returned.length,
+    'ignored metadata does not trigger additional broadcasts');
+  host.send({ type: 'start' });
+  const snapshots = await Promise.all([host.next('snapshot'), guest.next('snapshot')]);
+  for (const message of [...returned, ...host.messages, ...guest.messages, ...snapshots]) {
+    assert.equal(JSON.stringify(message).includes('旧昵称'), false);
+    assert.equal(JSON.stringify(message).includes('private-'), false);
+    if (message.type === 'room') for (const player of message.players) assert.deepEqual(Object.keys(player).sort(), ['connected', 'id']);
+  }
+  assert.equal(room.game.status, 'playing');
+  for (const member of room.members.values()) assert.equal(Object.hasOwn(member, 'profile'), false);
 });
 
 test('server health is bounded JSON and unknown HTTP routes and upgrade paths are rejected', async t => {

@@ -1,7 +1,6 @@
 import { Game, MAPS, DIFFICULTIES, WEAPON_ORDER } from './game.js';
 import { NETWORK_CONFIG, browserSocketURL } from './network-config.js';
 import { NetworkPresentation } from './network-presentation.js';
-import { cleanProfile } from './profile.js';
 
 // The client renders server snapshots. It never advances a local combat world.
 export class NetworkGame {
@@ -72,11 +71,9 @@ export class NetworkGame {
 
 export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.wx, WebSocketImpl = globalThis.WebSocket,
   endpoint = browserSocketURL(), timeoutMs = 15000, now = () => globalThis.performance?.now?.() ?? Date.now(),
-  profile: initialProfile = null,
   onRoom = () => {}, onSnapshot = () => {}, onError = () => {}, onEnd = () => {} } = {}) {
   let socket = null, active = true, opened = false, connected = false, sequence = 0, timer = null;
   let intent = null, heartbeat = null;
-  let profile = cleanProfile(initialProfile);
   let snapshotMap = null, snapshotDifficulty = null, snapshotTick = -1;
   let pingSentAt = null, snapshotReceivedAt = null;
   let metrics = { rttMs: null, snapshotIntervalMs: null, snapshotBytes: null, snapshotCount: 0 };
@@ -103,7 +100,15 @@ export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.w
     if (!active) return;
     const raw = typeof event.data === 'string' ? event.data : String(event.data);
     let data; try { data = JSON.parse(raw); } catch { fail('联机服务返回了无法识别的数据'); return; }
-    if (data.type === 'room') { connected = true; clearTimer(); onRoom(data); }
+    if (data.type === 'room') {
+      const room = {};
+      for (const key of ['type', 'protocol', 'code', 'playerId', 'hostId', 'phase', 'paused', 'pauseOwnerId', 'pauseOwnerIds', 'mapId', 'difficultyId']) {
+        if (Object.prototype.hasOwnProperty.call(data, key)) room[key] = data[key];
+      }
+      // A server awaiting deployment may still include retired display metadata.
+      room.players = Array.isArray(data.players) ? data.players.map(player => ({ id: player?.id, connected: player?.connected === true })) : [];
+      connected = true; clearTimer(); onRoom(room);
+    }
     else if (data.type === 'snapshot') {
       if (!connected) return;
       if (!Number.isSafeInteger(data.tick) || data.tick <= snapshotTick || !data.view) return;
@@ -157,7 +162,7 @@ export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.w
   }
   async function connect(message) {
     if (intent || !active) return;
-    intent = { ...message, ...(profile ? { profile } : {}) };
+    intent = message;
     timer = setTimeout(() => fail('连接超时，请检查联机服务后重试'), timeoutMs);
     try {
       if (platform === 'wechat') {
@@ -179,15 +184,6 @@ export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.w
     input: input => rawSend({ type: 'input', seq: ++sequence, input }),
     action: (action, options = {}) => rawSend({ type: 'action', action, ...options }),
     pause: paused => rawSend({ type: 'pause', paused }),
-    setProfile(value) {
-      const next = cleanProfile(value);
-      if (JSON.stringify(next) === JSON.stringify(profile)) return true;
-      profile = next;
-      if (intent && !opened) {
-        if (profile) intent.profile = profile; else delete intent.profile;
-      }
-      return opened ? rawSend({ type: 'profile', profile }) : true;
-    },
     getMetrics: () => ({ ...metrics }),
     close() { if (!active) return; rawSend({ type: 'leave' }); active = false; cleanup(); },
   };

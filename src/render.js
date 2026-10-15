@@ -474,7 +474,7 @@ function reviveProtection(ctx, player, map, t, foreground = false) {
 // Optional screen bounds supply a camera measured in world coordinates. Callers
 // without a camera keep the original world-space rendering behavior.
 export function drawArena(ctx, game, bounds = {}) {
-  const { time = 0, camera, grenadeAim, profiles = [] } = bounds;
+  const { time = 0, camera, grenadeAim } = bounds;
   const map = game.map || {}, w = num(map.width, 1280), h = num(map.height, 760), t = num(time) * .001;
   const palette = themes[map.id] || themes[map.theme] || themes.courtyard;
   const factory = map.id === 'greenhouse' || map.theme === 'factory';
@@ -539,9 +539,7 @@ export function drawArena(ctx, game, bounds = {}) {
       hurt: enemy ? num(actor.hitFlash) : num(actor.reviveProtectionRemaining) > 0 ? 0 : num(actor.invulnerability), weapon: actor.currentWeapon || 'pistol', time });
     ctx.restore();
     if (!enemy && game.online) {
-      const profile = profiles.find(player => player.id === actor.id)?.profile;
-      const name = Array.from(String(profile?.nickName || profile?.nickname || (actor.id === 'p2' ? '队友 2' : '队友 1')));
-      const label = name.length > 8 ? `${name.slice(0, 7).join('')}…` : name.join('');
+      const label = actor.id === 'p2' ? '玩家 2' : '玩家 1';
       ctx.font = '800 17px "PingFang SC", "Microsoft YaHei", sans-serif';
       const width = ctx.measureText(label).width + 20;
       const labelY = num(actor.y) - num(actor.radius, 20) - 25;

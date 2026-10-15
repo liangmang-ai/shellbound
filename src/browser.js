@@ -1,6 +1,5 @@
 import { createApp } from './app.js';
 import { createAudio } from './audio.js';
-import { createSocial } from './social.js';
 
 const canvas = document.getElementById('game');
 const storage = {
@@ -12,8 +11,7 @@ const size = () => {
   return { width: rect.width, height: rect.height, pixelRatio: Math.min(devicePixelRatio || 1, 2) };
 };
 const audio = createAudio();
-const social = createSocial({ platform: 'web' });
-const app = createApp({ canvas, ...size(), storage, platform: 'web', audio, social });
+const app = createApp({ canvas, ...size(), storage, platform: 'web', audio });
 const point = (event) => {
   const rect = canvas.getBoundingClientRect();
   return { x: event.clientX - rect.left, y: event.clientY - rect.top, button: event.button };

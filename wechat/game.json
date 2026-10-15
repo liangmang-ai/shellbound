@@ -1,5 +1,4 @@
 {
   "deviceOrientation": "landscape",
-  "showStatusBar": false,
-  "openDataContext": "open-data"
+  "showStatusBar": false
 }

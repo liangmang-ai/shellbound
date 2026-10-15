@@ -60,7 +60,7 @@ function checkPausePlacement(state, stats, wave) {
   }
 }
 
-function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = false, width = 844, height = 390, storedValues } = {}) {
+function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = false, width = 844, height = 390, storedValues, wxExtras } = {}) {
   const events = {}, frames = new Map(), drawnText = [], textDraws = [], paintedPanels = [], storageReads = [];
   let pathPoints = [];
   const values = new Map(storedValues || [['shellbound:shellbound.best.v1', '{"wave":7,"score":123}']]);
@@ -106,6 +106,7 @@ function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = 
   for (const name of ['TouchStart', 'TouchMove', 'TouchEnd', 'TouchCancel', 'WindowResize', 'Hide', 'Show']) {
     wx[`on${name}`] = (callback) => { events[name] = callback; };
   }
+  Object.assign(wx, wxExtras);
   const environment = { wx, setTimeout: requestFrame, clearTimeout: cancelFrame };
   if (scheduler === 'global') Object.assign(environment, { requestAnimationFrame: requestFrame, cancelAnimationFrame: cancelFrame });
   // There is deliberately no browser window/document/localStorage in this VM.
@@ -136,6 +137,22 @@ function harness({ scheduler = 'canvas', legacySizing = false, storageFailure = 
   }
   return { app, config: environment.__observedConfig, canvas, size, events, frames, step, touch, tapLabel, startGame, drawnText, textDraws, paintedPanels, storageReads, values };
 }
+
+test('WeChat entry never invokes withdrawn profile, privacy, friend or cloud-ranking APIs', () => {
+  const calls = [];
+  const names = ['getSetting', 'getUserInfo', 'getPrivacySetting', 'requirePrivacyAuthorize', 'createUserInfoButton',
+    'getOpenDataContext', 'getFriendCloudStorage', 'getUserCloudStorage', 'setUserCloudStorage', 'authorize'];
+  const h = harness({ wxExtras: Object.fromEntries(names.map(name => [name, () => { calls.push(name); throw new Error('Unexpected social API'); }])) });
+  h.step(0);
+  h.tapLabel('双人合作'); h.step(16);
+  assert.equal(h.drawnText.some(value => /授权微信|好友榜|设置昵称/.test(value)), false);
+  h.events.Hide(); h.events.Show(); h.step(32);
+  h.tapLabel('返回战区'); h.step(48);
+  h.tapLabel('开始突围'); h.step(64);
+  h.events.Hide(); h.events.Show(); h.step(96);
+  assert.deepEqual(calls, [], 'boot, room menu, combat and lifecycle use no social APIs');
+  assert.equal(h.app.getSnapshot().screen, 'game');
+});
 
 for (const scheduler of ['canvas', 'global', 'timeout']) {
   test(`WeChat bundle boots without DOM and keeps one ${scheduler} animation loop`, () => {

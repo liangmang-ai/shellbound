@@ -75,7 +75,7 @@ npm run build
 
 ```text
 dist/web/       浏览器版：index.html、app.js、source map、assets/audio
-dist/wechat/    微信版：game.js、game.json、project.config.json、open-data/index.js、assets/audio
+dist/wechat/    微信版：game.js、game.json、project.config.json、assets/audio
 ```
 
 在微信开发者工具中以「小游戏」项目导入 `dist/wechat`。当前源码和已导入工程均使用用户提供的小游戏 AppID `wx1a1efb651d164fae`。用户此前已上传并提交旧版审核，本次本地优化不会自动上传或替换审核中的版本。仅切换账号时，同时修改 `wechat/project.config.json` 和已导入工程 `dist/wechat/project.config.json` 的 AppID，再重新打开工程。开发者工具允许的测试方式和 AppID 权限以实际工具为准。参考 [微信官方小游戏示例配置](https://github.com/wechat-miniprogram/minigame-lockstep-demo/blob/master/project.config.json)。
@@ -84,7 +84,7 @@ dist/wechat/    微信版：game.js、game.json、project.config.json、open-dat
 
 双人合作后端的本地运行、微信云托管配置、GitHub 流水线与 ZIP 部署步骤见 [双人合作部署说明](docs/wechat-multiplayer.md)。云托管可以绑定个人仓库，之后直接拉取代码发布；仓库根目录已提供 Dockerfile。代码推送与本地验证不代表云端已经部署，也不会自动替换用户已上传的小游戏版本。
 
-合作房间支持玩家主动授权微信头像昵称，未授权时显示游客与蛋形默认头像。首页「好友榜」提供单人、双人各三档难度的六个榜，分数优先，同分比最高波次；双人成绩显示两位队友。微信好友数据只在开放数据域中读取与绘制，成绩使用微信云存储，无需新增数据库。后台隐私声明、授权与真机验证步骤见 [头像昵称与好友榜配置](docs/wechat-social.md)。这是客户端成绩的轻量好友榜，不包含全服排名或服务端成绩验证。
+本版暂时撤下微信头像昵称授权和好友排行榜，合作房间及战斗使用默认蛋形头像与「玩家 1／玩家 2」编号。客户端不调用头像昵称、隐私授权、朋友关系或排行榜云存储接口，构建时会清理旧的生成排行榜文件；原有单人本机最高分仍保留。撤下范围和重新启用前的准备见 [社交功能状态](docs/wechat-social.md)。
 
 已验证微信开发者工具的小游戏导入和模拟器运行；浏览器验证覆盖三种横屏尺寸。Android/iOS 真机兼容性、不同机型性能和平台提审仍需验证，当前构建不能等同于已上线微信小游戏。
 
@@ -94,9 +94,6 @@ dist/wechat/    微信版：game.js、game.json、project.config.json、open-dat
 src/game.js       战斗、敌人、地图、波次、掉落与装备规则
 src/coop-game.js  双人共享世界、独立玩家状态与服务端战斗快照
 src/multiplayer.js 房间连接、操作发送与客户端同步适配
-src/profile.js    房间与好友榜共享的公开资料格式和头像地址校验
-src/social.js     微信资料授权、头像与开放数据域通信
-src/social-data.js 六类好友榜的成绩格式、排序与存储大小约束
 src/app.js        输入、Canvas 界面与游戏状态切换
 src/render.js     原创角色、场景、HUD 与战斗效果绘制
 src/aim.js        前方目标筛选、视线检查与辅助瞄准
@@ -104,7 +101,6 @@ src/audio.js      浏览器与微信音效播放、静音及生命周期
 src/audio-synthesis.js 原创声音生成规则
 src/browser.js    浏览器启动及输入、页面生命周期适配
 wechat/game.js    微信启动及触摸、后台生命周期适配
-wechat/open-data/index.js 独立开放数据域中的好友榜与云成绩读写
 scripts/build.mjs  两个平台打包
 scripts/serve.mjs  浏览器本地服务
 scripts/package-server.mjs 微信云托管服务端白名单代码包
@@ -119,4 +115,4 @@ web/index.html    浏览器页面
 
 人物、怪物、地图、界面和效果均由本项目 Canvas 代码绘制，音效由本项目声音规则合成，不引用《僵尸危机 3》/Boxhead 或其他游戏的美术、音效、地图或源代码。此版本采用通用的俯视射击、波次闯关与拾取补给机制。新增素材时继续保留作者和授权信息；项目的原创制作说明不构成法律结论。
 
-双人合作版提供房间码邀请与两名玩家共享战斗，生产端通过微信云托管获取微信身份。房间和双方公开资料保存在单实例内存中，离开、断线或服务重启会结束房间；本地功能不代表已完成云端部署、两机真机测试或平台审核。暂未包含跨实例房间、断线续局、全服排行榜、广告、付费或持久账号系统。
+双人合作版提供房间码邀请与两名玩家共享战斗，生产端通过微信云托管获取微信身份。房间保存在单实例内存中，离开、断线或服务重启会结束房间；本地功能不代表已完成云端部署、两机真机测试或平台审核。暂未包含跨实例房间、断线续局、在线排行榜、广告、付费或持久账号系统。

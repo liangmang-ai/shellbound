@@ -63,21 +63,27 @@ test('WeChat connects through cloud identity and never falls back to a public We
   assert.equal(calls.at(-1), 'close');
 });
 
-test('optional display profile is sanitized in room intent and changes use the same authenticated socket', async t => {
-  const client = createMultiplayerClient({ endpoint, WebSocketImpl: FakeSocket,
-    profile: { nickName: '蛋友', avatarUrl: 'https://thirdwx.qlogo.cn/mmopen/a/132', openId: 'do-not-send' } });
-  t.after(() => client.close());
-  await client.create('greenhouse', 'easy');
-  client.setProfile({ nickName: '等待时改名', avatarUrl: 'https://attacker.test/a', sessionKey: 'do-not-send' });
-  const socket = FakeSocket.last; socket.emit('open');
-  assert.deepEqual(socket.sent[0].profile, { nickName: '等待时改名', avatarUrl: '' });
-  assert.equal(JSON.stringify(socket.sent).includes('do-not-send'), false);
-  client.setProfile({ nickName: '已授权蛋友', avatarUrl: 'https://wx.qlogo.cn/mmopen/a/132' });
-  assert.deepEqual(socket.sent[1], { type: 'profile', profile: { nickName: '已授权蛋友', avatarUrl: 'https://wx.qlogo.cn/mmopen/a/132' } });
-  client.setProfile({ nickName: '已授权蛋友', avatarUrl: 'https://wx.qlogo.cn/mmopen/a/132' });
-  assert.equal(socket.sent.length, 2, 'unchanged metadata does not generate repeated room broadcasts');
-  client.setProfile(null);
-  assert.deepEqual(socket.sent[2], { type: 'profile', profile: null });
+test('retired display options are never sent and legacy room metadata is discarded', async t => {
+  for (const operation of ['create', 'join']) {
+    const rooms = [];
+    const client = createMultiplayerClient({ endpoint, WebSocketImpl: FakeSocket,
+      profile: { nickName: '旧昵称', avatarUrl: 'https://thirdwx.qlogo.cn/mmopen/a/132', openId: 'private-openid' },
+      onRoom: value => rooms.push(value) });
+    t.after(() => client.close());
+    if (operation === 'create') await client.create('greenhouse', 'easy');
+    else await client.join('234567');
+    const socket = FakeSocket.last; socket.emit('open');
+    assert.deepEqual(socket.sent[0], operation === 'create'
+      ? { type: 'create', mapId: 'greenhouse', difficultyId: 'easy', compactSnapshots: true }
+      : { type: 'join', code: '234567', compactSnapshots: true });
+    assert.equal(client.setProfile, undefined);
+    socket.message({ ...room, runId: 'legacy-run', profile: { nickName: '旧昵称' },
+      players: room.players.map(player => ({ ...player, profile: { nickName: '旧昵称', avatarUrl: 'https://thirdwx.qlogo.cn/mmopen/a/132' }, openId: 'private-openid' })) });
+    assert.deepEqual(rooms[0], room);
+    assert.equal(JSON.stringify({ sent: socket.sent, received: rooms }).includes('旧昵称'), false);
+    assert.equal(JSON.stringify({ sent: socket.sent, received: rooms }).includes('private-openid'), false);
+    client.close();
+  }
 });
 
 test('leaving before the async WeChat connection resolves closes the stale socket', async () => {

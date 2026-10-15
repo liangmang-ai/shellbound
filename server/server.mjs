@@ -1,11 +1,10 @@
 import { createServer } from 'node:http';
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { MAPS, DIFFICULTIES, WEAPON_ORDER } from '../src/game.js';
 import { CoopGame } from '../src/coop-game.js';
-import { cleanProfile } from '../src/profile.js';
 
 export const PROTOCOL_VERSION = 1;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -60,8 +59,8 @@ export function createCoopServer(options = {}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096, perMessageDeflate: false });
 
   function roomInfo(room, member) {
-    return { type: 'room', protocol: PROTOCOL_VERSION, code: room.code, runId: room.runId, playerId: member.id,
-      players: [...room.members.values()].map(m => ({ id: m.id, connected: m.socket.readyState === WebSocket.OPEN, profile: m.profile })),
+    return { type: 'room', protocol: PROTOCOL_VERSION, code: room.code, playerId: member.id,
+      players: [...room.members.values()].map(m => ({ id: m.id, connected: m.socket.readyState === WebSocket.OPEN })),
       hostId: 'p1', phase: room.paused ? 'paused' : room.game ? room.game.status : 'waiting',
       paused: room.paused, pauseOwnerId: room.pauseOwnerId, pauseOwnerIds: [...room.pauseOwners], mapId: room.mapId, difficultyId: room.difficultyId };
   }
@@ -115,14 +114,8 @@ export function createCoopServer(options = {}) {
     if (!plain(message) || typeof message.type !== 'string') return reject(member, '请求格式不正确');
     const room = member.room;
     if (message.type === 'ping') return send(member.socket, { type: 'pong' });
-    if (message.type === 'profile') {
-      const profile = cleanProfile(message.profile);
-      if (JSON.stringify(profile) === JSON.stringify(member.profile)) return;
-      if (profile && now() - member.profileUpdatedAt < 2000) return reject(member, '资料更新太快，请稍后再试');
-      member.profile = profile; member.profileUpdatedAt = now();
-      if (room) announce(room);
-      return;
-    }
+    // Older clients may still send display metadata; discard it without disrupting combat.
+    if (message.type === 'profile') return;
     if (message.type === 'create' || message.type === 'join') {
       if (room) return reject(member, '已经在房间中');
       if (!allowRoomAttempt(member)) return;
@@ -132,10 +125,9 @@ export function createCoopServer(options = {}) {
           || typeof message.difficultyId !== 'string' || !Object.hasOwn(DIFFICULTIES, message.difficultyId)) return reject(member, '请选择有效地图和难度');
         let code;
         do { code = String(randomInt(100000, 1000000)); } while (rooms.has(code));
-        const created = { code, runId: randomBytes(12).toString('hex'), mapId: message.mapId, difficultyId: message.difficultyId,
+        const created = { code, mapId: message.mapId, difficultyId: message.difficultyId,
           members: new Map(), game: null, createdAt: now(), paused: false, pauseOwners: new Set(), pauseOwnerId: null, pausedAt: null, tick: 0, snapshotSeq: 0, events: [] };
         member.id = 'p1'; member.room = created; member.compactSnapshots = message.compactSnapshots === true;
-        member.profile = cleanProfile(message.profile);
         created.members.set('p1', member); rooms.set(code, created); announce(created);
       } else {
         if (typeof message.code !== 'string' || !/^\d{6}$/.test(message.code)) return reject(member, '请输入 6 位房间码');
@@ -143,7 +135,6 @@ export function createCoopServer(options = {}) {
         if (!target) return reject(member, '房间不存在或已结束');
         if (target.game || target.members.size >= 2) return reject(member, '房间已开始或人数已满');
         member.id = 'p2'; member.room = target; member.compactSnapshots = message.compactSnapshots === true;
-        member.profile = cleanProfile(message.profile);
         target.members.set('p2', member); announce(target);
       }
       return;
@@ -202,7 +193,6 @@ export function createCoopServer(options = {}) {
 
   wss.on('connection', (socket, identity) => {
     const member = { socket, identity, room: null, id: null, input: {}, actions: [], seq: -1,
-      profile: null, profileUpdatedAt: -Infinity,
       compactSnapshots: false, snapshotMap: null, snapshotDifficulty: null,
       lastInputAt: now(), lastSeenAt: now(), connectedAt: now(), rateAt: now(), tokens: 120, alive: true };
     sessions.add(member); identities.set(identity, member);
