@@ -33,15 +33,19 @@ function harness(options = {}) {
 }
 
 for (const [width, height] of [[844, 390], [667, 375], [1024, 768]]) {
-  test(`menu gives both modes equal prominent entries and readable difficulty at ${width}×${height}`, () => {
+  test(`menu keeps balanced typography and generous difficulty touch targets at ${width}×${height}`, () => {
     const h = harness({ width, height }), state = h.app.getSnapshot();
     const solo = state.buttons.find(item => item.label === '开始突围'), coop = state.buttons.find(item => item.label === '双人合作');
     assert.equal(solo.w, coop.w); assert.equal(solo.h, coop.h);
     assert.ok(coop.h * state.layout.scale >= 44);
     for (const label of ['休闲', '标准', '挑战']) {
       const draw = h.texts.find(item => item.value === label);
-      assert.match(draw.font, /^800 30px/);
-      assert.ok(30 * state.layout.scale >= 20, 'physical difficulty text stays large');
+      const [, weight, size] = /^(\d+) (\d+)px/.exec(draw.font);
+      const physicalSize = Number(size) * state.layout.scale;
+      assert.ok(Number(weight) <= 700, 'secondary choices do not use headline weight');
+      assert.ok(physicalSize >= 16 && physicalSize <= 20, 'difficulty text stays readable without dominating');
+      const target = state.buttons.find(item => item.label === label);
+      assert.ok(target.h * state.layout.scale >= 44, 'a smaller label retains a generous tap target');
     }
     for (const button of state.buttons) {
       assert.ok(button.x >= 0 && button.y >= 0 && button.x + button.w <= state.layout.w && button.y + button.h <= state.layout.h);
@@ -49,6 +53,24 @@ for (const [width, height] of [[844, 390], [667, 375], [1024, 768]]) {
       const top = state.layout.oy + button.y * state.layout.scale;
       assert.ok(top >= 60 || right < width - 118, `${button.label} avoids the native upper-right capsule`);
     }
+  });
+
+  test(`cooperation entries and room-code label stay readable at ${width}×${height}`, () => {
+    const h = harness({ width, height });
+    const readable = (label, minimum) => {
+      const draw = h.texts.find(item => item.value === label);
+      assert.ok(draw, `${label} is visible`);
+      const size = Number(/(\d+)px/.exec(draw.font)[1]) * h.app.getSnapshot().layout.scale;
+      assert.ok(size >= minimum, `${label} has at least ${minimum} CSS px text`);
+    };
+    readable('双人合作', 20);
+    h.tap('双人合作');
+    readable('创建房间', 20); readable('输入房间码加入', 20);
+    h.tap('创建房间');
+    h.callbacks.onRoom({ playerId: 'p1', hostId: 'p1', code: '123456', mapId: 'greenhouse', difficultyId: 'easy',
+      players: [{ id: 'p1', connected: true }] });
+    h.frame();
+    readable('房间码', 18);
   });
 }
 

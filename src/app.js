@@ -2,8 +2,9 @@ import { Game, MAPS, WEAPONS, WEAPON_ORDER, GRENADE_RULES, DIFFICULTIES, BOOST_R
 import { drawArena, drawEgg } from './render.js';
 import { findAimTarget } from './aim.js';
 import { createMultiplayerClient, NetworkGame } from './multiplayer.js';
+import { UI_COLORS, drawSurface, drawButtonSurface, drawDifficultySegment } from './ui.js';
 
-const C = { bg: '#101e25', panel: '#1b2c33', line: '#40585d', ink: '#fff8e7', muted: '#b5ccce', lime: '#d1f58a', teal: '#a4eed2', coral: '#ffb196' };
+const C = UI_COLORS;
 const FONT = '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
 const weaponIds = WEAPON_ORDER;
 const mapLabels = { greenhouse: ['汽泡工坊', '爆破油桶 · 加速穿行'], candyloop: ['星糖回廊', '中心岛 · 双环绕行'] };
@@ -16,6 +17,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   let paused = false, help = false, weaponPicker = false, lastTimestamp = null, clock = 0, pointer = null, shooting = false;
   let buttons = [], touches = new Map(), keys = new Set(), actions = {}, toast = '', toastUntil = 0, resultSaved = false;
   let grenadePointer = null;
+  let pressedButton = null;
   let network = null, connectionId = 0;
   let backgrounded = false, backgroundPauseRequested = false;
   let coop = { view: 'select', code: '', room: null, message: '' };
@@ -217,12 +219,31 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function text(value, x, y, fontSize = 18, color = C.ink, weight = 650, align = 'left') {
     ctx.font = `${weight} ${fontSize}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillText(String(value), x, y);
   }
-  function button(x, y, w, h, label, callback, { fill = C.panel, color = C.ink, border = C.line, fontSize = 24, active = true, weight = 800 } = {}) {
-    rounded(x, y, w, h, Math.min(16, h / 3), fill, border); text(label, x + w / 2, y + h / 2, fontSize, color, weight, 'center');
-    if (active) buttons.push({ x, y, w, h, callback, label });
+  function buttonIcon(kind, x, y, color) {
+    ctx.save(); ctx.translate(x, y); ctx.fillStyle = color; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (kind === 'play') { ctx.beginPath(); ctx.moveTo(-5, -8); ctx.lineTo(8, 0); ctx.lineTo(-5, 8); ctx.closePath(); ctx.fill(); }
+    else if (kind === 'duo') {
+      for (const [dx, dy] of [[-6, -3], [6, 3]]) { ctx.beginPath(); ctx.ellipse(dx, dy, 6, 8, -.15, 0, Math.PI * 2); ctx.stroke(); }
+    } else if (kind === 'plus') { line(-7, 0, 7, 0, color); line(0, -7, 0, 7, color); }
+    else if (kind === 'back') { ctx.beginPath(); ctx.moveTo(3, -6); ctx.lineTo(-3, 0); ctx.lineTo(3, 6); ctx.stroke(); }
+    else { for (const dx of [-7, 0, 7]) { ctx.beginPath(); ctx.arc(dx, 0, 2, 0, Math.PI * 2); ctx.fill(); } }
+    ctx.restore();
+  }
+  function button(x, y, w, h, label, callback, { fill = C.panel, color = C.ink, border = null, fontSize = 22, active = true, weight = 650, icon, minHit = 0 } = {}) {
+    const pressed = pressedButton?.label === label ? clamp((pressedButton.until - clock) / .16, 0, 1) : 0;
+    const offset = drawButtonSurface(ctx, x, y, w, h, { fill, border, active, pressed });
+    ctx.save(); if (!active) ctx.globalAlpha *= .7;
+    const textX = x + w / 2 + (icon ? 12 : 0);
+    text(label, textX, y + h / 2 + offset, fontSize, color, weight, 'center');
+    if (icon) buttonIcon(icon, textX - ctx.measureText(label).width / 2 - 22, y + h / 2 + offset, color);
+    ctx.restore();
+    if (active) {
+      const hitH = Math.max(h, minHit);
+      buttons.push({ x, y: y - (hitH - h) / 2, w, h: hitH, callback, label });
+    }
   }
   function playerPortrait(x, y, radius = 23, color = '#f5ebcc') {
-    rounded(x - radius, y - radius, radius * 2, radius * 2, radius, '#344c49', '#638577');
+    rounded(x - radius, y - radius, radius * 2, radius * 2, radius, '#3a514c');
     drawEgg(ctx, x, y + 1, { scale: radius / 27, color, angle: -.15, time: clock * 1000 });
   }
   function skillButton(role, label, callback, { color = C.ink, value = '', disabled = false, progress = 0 } = {}) {
@@ -295,8 +316,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const { compact, w, h } = layout;
     drawLogo(38, 27, compact);
     const toolsX = compact ? 344 : w - 600;
-    button(toolsX, 28, 116, 46, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 21 });
-    button(toolsX + 128, 28, 126, 46, '操作指南', () => { audio?.pause(); help = true; }, { fontSize: 21 });
+    button(toolsX, 28, 116, 46, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 19, fill: '#243b3e', minHit: 64 });
+    button(toolsX + 128, 28, 126, 46, '操作指南', () => { audio?.pause(); help = true; }, { fontSize: 19, fill: '#243b3e', minHit: 64 });
     if (!compact) {
       text('无尽突围 / 并肩作战', 64, 141, 21, C.teal, 750);
       text('守住最后', 60, 223, 76, C.ink, 800);
@@ -316,86 +337,91 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const x = compact ? 468 : 710, top = compact ? 100 : 210, cardW = compact ? 456 : 500, cardH = compact ? 92 : 165, gap = compact ? 12 : 18;
     MAPS.forEach((map, i) => {
       const y = top + i * (cardH + gap), selected = selectedMap === map.id, label = mapLabels[map.id] || [map.name || map.id, ''];
-      rounded(x, y, cardW, cardH, 18, selected ? '#29453d' : C.panel, selected ? C.lime : C.line);
+      drawSurface(ctx, x, y, cardW, cardH, { radius: 26, fill: selected ? '#2b443d' : C.panel, border: selected ? '#779a7f' : null, elevated: selected });
       const mw = compact ? 105 : 159, mh = compact ? 68 : 131;
       mapPreview(map, x + 12, y + 12, mw, mh);
       const tx = x + mw + 28;
-      text(`0${i + 1}${selected ? '  ✓' : ''}`, tx, y + (compact ? 19 : 34), 17, selected ? C.lime : C.muted, 750);
-      text(label[0], tx, y + (compact ? 45 : 76), compact ? 29 : 31, C.ink, 800);
-      text(label[1], tx, y + (compact ? 74 : 116), compact ? 19 : 21, C.muted);
+      text(`0${i + 1}${selected ? '  ✓' : ''}`, tx, y + (compact ? 19 : 34), 16, selected ? C.lime : C.muted, 600);
+      text(label[0], tx, y + (compact ? 45 : 76), compact ? 26 : 28, C.ink, 700);
+      text(label[1], tx, y + (compact ? 74 : 116), compact ? 18 : 20, C.muted, 500);
       buttons.push({ x, y, w: cardW, h: cardH, callback: () => { selectedMap = map.id; }, label: label[0] });
     });
-    const difficultyY = compact ? 304 : top + (cardH + gap) * 2 + 5;
-    const difficultyW = (cardW - 20) / 3;
+    const difficultyY = compact ? 310 : top + (cardH + gap) * 2 + 5;
+    const difficultyW = cardW / 3, difficultyH = 64;
+    drawSurface(ctx, x, difficultyY, cardW, difficultyH, { radius: 32, fill: '#1a2e32' });
     Object.values(DIFFICULTIES).forEach((difficulty, i) => {
       const selected = selectedDifficulty === difficulty.id;
-      button(x + i * (difficultyW + 10), difficultyY, difficultyW, compact ? 66 : 60, difficulty.label,
-        () => { selectedDifficulty = difficulty.id; saveSettings(); },
-        { fill: selected ? '#425738' : C.panel, border: selected ? C.lime : C.line, color: selected ? C.lime : C.ink, fontSize: 30 });
+      const dx = x + i * difficultyW;
+      const pressed = pressedButton?.label === difficulty.label ? clamp((pressedButton.until - clock) / .16, 0, 1) : 0;
+      drawDifficultySegment(ctx, dx + 5, difficultyY + 5, difficultyW - 10, difficultyH - 10, { selected, pressed });
+      text(difficulty.label, dx + difficultyW / 2, difficultyY + difficultyH / 2, compact ? 24 : 23, selected ? C.lime : C.muted, selected ? 650 : 550, 'center');
+      buttons.push({ x: dx, y: difficultyY, w: difficultyW, h: difficultyH, label: difficulty.label,
+        callback: () => { selectedDifficulty = difficulty.id; saveSettings(); } });
     });
-    text(difficultyHints[selectedDifficulty], x + cardW / 2, difficultyY + (compact ? 87 : 82), 19, C.teal, 700, 'center');
-    const startY = compact ? 418 : difficultyY + 110, entryW = (cardW - 12) / 2;
-    button(x, startY, entryW, compact ? 82 : 72, '开始突围', start, { fill: C.lime, color: C.bg, border: C.lime, fontSize: 30 });
-    button(x + entryW + 12, startY, entryW, compact ? 82 : 72, '双人合作', openCoop, { fill: '#29453d', border: C.teal, color: C.teal, fontSize: 30 });
-    text(best.score ? `最佳  ${best.score} 分 · 第 ${best.wave} 波` : '每局 3 次复活', x + cardW / 2, startY + (compact ? 106 : 98), 18, C.muted, 650, 'center');
+    text(difficultyHints[selectedDifficulty], x + cardW / 2, difficultyY + 85, 18, C.teal, 500, 'center');
+    const startY = compact ? 420 : difficultyY + 110, entryW = (cardW - 12) / 2;
+    button(x, startY, entryW, 72, '开始突围', start, { fill: C.lime, color: C.bg, fontSize: compact ? 30 : 28, weight: 700, icon: 'play' });
+    button(x + entryW + 12, startY, entryW, 72, '双人合作', openCoop, { fill: '#294b43', color: C.teal, fontSize: compact ? 30 : 28, icon: 'duo' });
+    text(best.score ? `最佳  ${best.score} 分 · 第 ${best.wave} 波` : '每局 3 次复活', x + cardW / 2, startY + 95, 17, C.muted, 500, 'center');
   }
   function drawCoopHeader() {
     drawLogo(38, 27, layout.compact);
-    button(326, 28, 126, 46, '返回战区', menu, { fontSize: 22 });
+    button(326, 28, 126, 46, '返回战区', menu, { fontSize: 19, icon: 'back', minHit: 64 });
   }
   function drawCoop() {
     drawCoopHeader();
-    const cx = layout.w / 2, panelW = 680, panelX = cx - panelW / 2, panelY = layout.compact ? 110 : (layout.h - 474) / 2, panelH = layout.compact ? 408 : 474;
-    rounded(panelX, panelY, panelW, panelH, 24, C.panel, C.line);
-    text('双人合作', cx, panelY + 38, 36, C.ink, 800, 'center');
+    const cx = layout.w / 2, panelW = 680, panelX = cx - panelW / 2, panelY = layout.compact ? 104 : (layout.h - 474) / 2, panelH = layout.compact ? 424 : 474;
+    const actionSize = layout.compact ? 30 : 28;
+    drawSurface(ctx, panelX, panelY, panelW, panelH, { radius: 36, elevated: true });
+    text('双人合作', cx, panelY + 37, 28, C.ink, 700, 'center');
     if (coop.view === 'join') {
-      text(coop.code.padEnd(6, '·').split('').join('  '), cx, panelY + 87, 38, C.lime, 800, 'center');
-      text('输入 6 位房间码', cx, panelY + 123, 21, C.muted, 700, 'center');
+      text(coop.code.padEnd(6, '·').split('').join('  '), cx, panelY + 87, 34, C.lime, 650, 'center');
+      text('输入 6 位房间码', cx, panelY + 123, 18, C.muted, 500, 'center');
       ['1', '2', '3', '4', '5', '6', '7', '8', '9', '删除', '0', '加入房间'].forEach((value, index) => {
-        const x = panelX + 44 + index % 3 * 200, y = panelY + 153 + Math.floor(index / 3) * 63;
+        const x = panelX + 44 + index % 3 * 200, y = panelY + 147 + Math.floor(index / 3) * 65;
         const join = value === '加入房间';
-        button(x, y, 192, 54, value, () => {
+        button(x, y + 4, 192, 56, value, () => {
           if (join) connectCoop(true);
           else if (value === '删除') coop.code = coop.code.slice(0, -1);
           else if (coop.code.length < 6) coop.code += value;
-        }, { fontSize: join ? 26 : 29, fill: join && coop.code.length === 6 ? C.lime : C.bg, color: join && coop.code.length === 6 ? C.bg : C.ink, active: !join || coop.code.length === 6 });
+        }, { fontSize: join || value === '删除' ? 23 : 26, weight: 600, minHit: 64, fill: join && coop.code.length === 6 ? C.lime : '#2a4144', color: join && coop.code.length === 6 ? C.bg : C.ink, active: !join || coop.code.length === 6 });
       });
       return;
     }
     if (coop.view === 'connecting') {
-      text('正在连接…', cx, panelY + 167, 29, C.teal, 800, 'center');
-      button(panelX + 70, panelY + 312, panelW - 140, 66, '取消连接', openCoop, { fontSize: 28 });
+      text('正在连接…', cx, panelY + 167, 24, C.teal, 600, 'center');
+      button(panelX + 70, panelY + 312, panelW - 140, 64, '取消连接', openCoop, { fontSize: actionSize });
       return;
     }
     if (coop.view === 'error') {
-      text('房间连接已结束', cx, panelY + 108, 28, C.coral, 800, 'center');
+      text('房间连接已结束', cx, panelY + 108, 25, C.coral, 650, 'center');
       const lines = String(coop.message).match(/.{1,25}/gu) || [];
-      lines.slice(0, 3).forEach((value, index) => text(value, cx, panelY + 162 + index * 33, 22, C.ink, 650, 'center'));
-      button(panelX + 70, panelY + 312, panelW - 140, 66, '重新创建或加入', openCoop, { fill: C.lime, color: C.bg, border: C.lime, fontSize: 28 });
+      lines.slice(0, 3).forEach((value, index) => text(value, cx, panelY + 162 + index * 33, 20, C.ink, 500, 'center'));
+      button(panelX + 70, panelY + 312, panelW - 140, 64, '重新创建或加入', openCoop, { fill: C.lime, color: C.bg, fontSize: actionSize });
       return;
     }
     if (coop.view === 'room' && coop.room) {
       const room = coop.room, host = room.playerId === room.hostId;
       const ready = room.players?.filter(player => player.connected !== false).length === 2;
-      text('房间码', cx - 146, panelY + 96, 21, C.muted, 700, 'center');
-      text(room.code, cx + 37, panelY + 96, 49, C.lime, 800, 'center');
-      text(`${mapLabels[room.mapId]?.[0] || room.mapId} · ${DIFFICULTIES[room.difficultyId]?.label || ''}`, cx, panelY + 145, 23, C.teal, 750, 'center');
+      text('房间码', cx - 136, panelY + 96, 26, C.muted, 550, 'center');
+      text(room.code, cx + 26, panelY + 96, 42, C.lime, 650, 'center');
+      text(`${mapLabels[room.mapId]?.[0] || room.mapId} · ${DIFFICULTIES[room.difficultyId]?.label || ''}`, cx, panelY + 145, 20, C.teal, 500, 'center');
       for (const [index, id] of ['p1', 'p2'].entries()) {
         const player = room.players?.find(player => player.id === id), connected = player && player.connected !== false;
         const cardX = panelX + 30 + index * 316, cardY = panelY + 183;
-        rounded(cardX, cardY, 304, 103, 16, C.bg, connected ? '#638577' : C.line);
+        drawSurface(ctx, cardX, cardY, 304, 103, { radius: 26, fill: connected ? index ? '#294049' : '#2d443d' : '#1b2e33' });
         playerPortrait(cardX + 43, cardY + 47, 28, index ? '#b6dcff' : '#f5ebcc');
-        text(connected ? `玩家 ${index + 1}` : '等待队友', cardX + 84, cardY + 33, 25, index ? '#b6dcff' : C.ink, 800);
-        text(connected ? `${id === room.playerId ? '你' : '队友'} · ${id === room.hostId ? '房主' : '已加入'}` : '分享房间码邀请', cardX + 84, cardY + 72, 20, connected ? C.teal : C.muted, 700);
+        text(connected ? `玩家 ${index + 1}` : '等待队友', cardX + 84, cardY + 33, 23, index ? '#b6dcff' : C.ink, 650);
+        text(connected ? `${id === room.playerId ? '你' : '队友'} · ${id === room.hostId ? '房主' : '已加入'}` : '分享房间码邀请', cardX + 84, cardY + 72, 18, connected ? C.teal : C.muted, 500);
       }
-      button(panelX + 70, panelY + 308, panelW - 140, 66, host ? ready ? '开始双人突围' : '等待队友加入' : '等待房主开始', () => network?.start(),
-        { active: host && ready, fill: host && ready ? C.lime : C.bg, color: host && ready ? C.bg : C.muted, border: host && ready ? C.lime : C.line, fontSize: 29 });
-      if (coop.message) text(coop.message, cx, panelY + 391, 20, C.coral, 650, 'center');
+      button(panelX + 70, panelY + 308, panelW - 140, 64, host ? ready ? '开始双人突围' : '等待队友加入' : '等待房主开始', () => network?.start(),
+        { active: host && ready, fill: host && ready ? C.lime : '#29413e', color: host && ready ? C.bg : C.muted, fontSize: actionSize, icon: host && ready ? 'play' : undefined });
+      if (coop.message) text(coop.message, cx, panelY + 399, 18, C.coral, 500, 'center');
       return;
     }
-    text(`${mapLabels[selectedMap]?.[0]} · ${DIFFICULTIES[selectedDifficulty].label}`, cx, panelY + 103, 25, C.teal, 750, 'center');
-    button(panelX + 70, panelY + 157, panelW - 140, 82, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, border: C.lime, fontSize: 32 });
-    button(panelX + 70, panelY + 263, panelW - 140, 82, '输入房间码加入', () => { coop.view = 'join'; coop.code = ''; }, { fill: '#29453d', border: C.teal, color: C.teal, fontSize: 30 });
+    text(`${mapLabels[selectedMap]?.[0]} · ${DIFFICULTIES[selectedDifficulty].label}`, cx, panelY + 103, 20, C.teal, 500, 'center');
+    button(panelX + 70, panelY + 157, panelW - 140, 72, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, fontSize: actionSize, icon: 'plus' });
+    button(panelX + 70, panelY + 263, panelW - 140, 72, '输入房间码加入', () => { coop.view = 'join'; coop.code = ''; }, { fill: '#294b43', color: C.teal, fontSize: actionSize, icon: 'code' });
   }
   function bar(x, y, w, value, max, color) { rounded(x, y, w, 7, 3, '#34464a'); if (value > 0) rounded(x, y, Math.max(6, w * clamp(value / max, 0, 1)), 7, 3, color); }
   function drawHUD() {
@@ -425,7 +451,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text(`${game.difficulty.label} · 第 ${game.wave} 波`, w / 2, 40, 22, C.lime, 800, 'center');
     text(`剩余 ${game.waveTotal - game.waveKills}   ·   ${game.score} 分`, w / 2, 68, 18, C.ink, 700, 'center');
     const pause = pauseBounds();
-    button(pause.x, pause.y, pause.w, pause.h, 'Ⅱ 暂停', togglePause, { fill: 'rgba(16,30,37,.9)', fontSize: 23 });
+    button(pause.x, pause.y, pause.w, pause.h, 'Ⅱ 暂停', togglePause, { fill: 'rgba(16,30,37,.9)', fontSize: 21 });
     if (game.intermissionRemaining > 0) {
       rounded(w / 2 - 102, 100, 204, 40, 14, 'rgba(16,30,37,.92)', C.teal);
       text(`下一波 · ${Math.max(1, Math.ceil(game.intermissionRemaining))}`, w / 2, 120, 25, C.teal, 800, 'center');
@@ -569,7 +595,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function activate(point) {
     const button = buttonAt(point);
-    if (button) { button.callback(); return true; } return false;
+    if (button) { pressedButton = { label: button.label, until: clock + .16 }; button.callback(); return true; } return false;
   }
   function handlePointer(type, point) {
     const p = logical(point);
