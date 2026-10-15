@@ -371,7 +371,7 @@ test('co-op menu creates rooms, waits for host start and can leave without stale
   assert.deepEqual(h.calls[0], ['create', 'greenhouse', 'easy']);
   const client = h.clients[0]; client.options.onRoom({ ...room, phase: 'waiting' });
   h.tap('开始双人突围'); assert.ok(h.calls.some(call => call[0] === 'start'));
-  h.tap('返回战区');
+  h.tap('返回地图选择');
   client.options.onSnapshot(fixture(), 1); client.options.onRoom(room);
   assert.equal(h.app.getSnapshot().screen, 'menu'); assert.ok(h.calls.some(call => call[0] === 'close'));
 });
@@ -466,16 +466,161 @@ test('hiding after both players die registers a pause before a teammate revive c
   assert.ok(h.app.getSnapshot().buttons.some(button => button.label.includes('免费复活')));
 });
 
-test('WeChat connect rejection explains identity deployment and iOS performance limitations without public fallback', async () => {
-  const errors = [];
+test('WeChat connect rejection preserves a safe stage and error code without assuming iOS or public fallback', async () => {
+  const errors = [], details = [];
   let fallbacks = 0;
-  const wxApi = { cloud: { init() {}, connectContainer: async () => { throw new Error('connection rejected'); } } };
-  const client = createMultiplayerClient({ platform: 'wechat', wxApi, WebSocketImpl: class { constructor() { fallbacks++; } }, onError: value => errors.push(value) });
+  const wxApi = { cloud: { init() {}, connectContainer: async () => { throw { errCode: -601034, errMsg: 'private identity and signed URL must not be displayed' }; } } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, WebSocketImpl: class { constructor() { fallbacks++; } }, onError: (value, info) => { errors.push(value); details.push(info); } });
   await client.create('greenhouse', 'easy');
   assert.equal(fallbacks, 0);
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /部署与身份权限/);
-  assert.match(errors[0], /iOS 高性能\+/);
+  assert.match(errors[0], /云连接.*-601034/);
+  assert.match(errors[0], /身份权限/);
+  assert.doesNotMatch(errors[0], /iOS|private identity|signed URL/);
+  assert.deepEqual(details, [{ stage: '云连接', code: '-601034', attempts: 1 }]);
+});
+
+function wxSocket() {
+  const handlers = {}, sent = [];
+  return { handlers, sent, closed: 0,
+    onOpen(fn) { handlers.open = fn; }, onMessage(fn) { handlers.message = fn; },
+    onError(fn) { handlers.error = fn; }, onClose(fn) { handlers.close = fn; },
+    send({ data }) { sent.push(JSON.parse(data)); }, close() { this.closed++; handlers.close?.({ code: 1000 }); },
+    message(value) { handlers.message?.({ data: JSON.stringify(value) }); } };
+}
+function controlledTimeouts(t) {
+  let clock = 0, sequence = 0;
+  const pending = new Map();
+  t.mock.method(globalThis, 'setTimeout', (callback, delay = 0) => {
+    const id = ++sequence; pending.set(id, { at: clock + delay, callback }); return id;
+  });
+  t.mock.method(globalThis, 'clearTimeout', id => pending.delete(id));
+  return { tick(ms) {
+    const end = clock + ms;
+    while (true) {
+      const next = [...pending].filter(([, task]) => task.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      pending.delete(next[0]); clock = next[1].at; next[1].callback();
+    }
+    clock = end;
+  } };
+}
+
+test('WeChat registers replies before an immediate open notification and sends the room intent once', async t => {
+  const timers = controlledTimeouts(t);
+  const task = wxSocket(), rooms = [], errors = [];
+  task.onOpen = fn => { task.handlers.open = fn; fn(); };
+  task.send = ({ data }) => { task.sent.push(JSON.parse(data)); task.message(room); };
+  const wxApi = { cloud: { init() {}, connectContainer: async () => ({ socketTask: task }) } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, timeoutMs: 20,
+    onRoom: value => rooms.push(value), onError: value => errors.push(value) });
+  t.after(() => client.close());
+  await client.create('greenhouse', 'easy'); task.handlers.open();
+  timers.tick(30);
+  assert.equal(task.sent.length, 1); assert.equal(rooms.length, 1); assert.deepEqual(errors, []);
+});
+
+test('WeChat cloud initialization failures remain distinct and do not call connectContainer', async () => {
+  let calls = 0; const errors = [];
+  const wxApi = { cloud: { init() { throw { errCode: -1, errMsg: 'sensitive initialization payload' }; }, connectContainer() { calls++; } } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, onError: value => errors.push(value) });
+  await client.create('greenhouse', 'easy');
+  assert.equal(calls, 0); assert.match(errors[0], /云初始化.*-1/); assert.doesNotMatch(errors[0], /sensitive/);
+});
+
+for (const transient of [{ errCode: 102002 }, { errMsg: 'connectContainer:fail SERVICE_NOT_READY' }]) {
+  test(`WeChat retries known transient cloud failures before a room intent: ${JSON.stringify(transient)}`, async t => {
+    const timers = controlledTimeouts(t);
+    let calls = 0, inits = 0; const task = wxSocket(), errors = [];
+    const wxApi = { cloud: { init() { inits++; }, async connectContainer() { if (++calls === 1) throw transient; return { socketTask: task }; } } };
+    const client = createMultiplayerClient({ platform: 'wechat', wxApi, retryDelayMs: 1, onError: value => errors.push(value) });
+    t.after(() => client.close());
+    await client.create('greenhouse', 'easy'); timers.tick(1); await Promise.resolve(); task.handlers.open(); task.message(room);
+    assert.equal(calls, 2); assert.equal(inits, 1); assert.equal(task.sent.length, 1); assert.deepEqual(errors, []);
+  });
+}
+
+test('WeChat handshake retry isolates stale socket callbacks and never replays a sent create', async t => {
+  const timers = controlledTimeouts(t);
+  let calls = 0; const tasks = [wxSocket(), wxSocket()], rooms = [], errors = [];
+  const wxApi = { cloud: { init() {}, connectContainer: async () => ({ socketTask: tasks[calls++] }) } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, retryDelayMs: 1,
+    onRoom: value => rooms.push(value), onError: value => errors.push(value) });
+  t.after(() => client.close());
+  await client.create('greenhouse', 'easy');
+  tasks[0].handlers.error({ errMsg: 'SERVICE_NOT_READY' }); timers.tick(1); await Promise.resolve();
+  tasks[0].handlers.open(); tasks[0].message(room); tasks[0].handlers.close({ code: 1006 });
+  assert.equal(tasks[0].closed, 1); assert.equal(tasks[0].sent.length, 0); assert.deepEqual(rooms, []);
+  tasks[1].handlers.open();
+  tasks[1].handlers.error({ errCode: 102002 }); timers.tick(15);
+  assert.equal(calls, 2, 'a create that may have reached the server is never retried');
+  assert.equal(tasks[1].sent.length, 1); assert.equal(errors.length, 1); assert.match(errors[0], /实时连接.*102002/);
+});
+
+test('WeChat cancelling during retry backoff cancels further connections and error delivery', async t => {
+  const timers = controlledTimeouts(t);
+  let calls = 0; const errors = [];
+  const wxApi = { cloud: { init() {}, async connectContainer() { calls++; throw { errCode: 102002 }; } } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, retryDelayMs: 15, onError: value => errors.push(value) });
+  await client.create('greenhouse', 'easy'); client.close(); timers.tick(30);
+  assert.equal(calls, 1); assert.deepEqual(errors, []);
+});
+
+test('WeChat timeout retries before sending and closes a late socket from the previous attempt', async t => {
+  const timers = controlledTimeouts(t);
+  let calls = 0, finishFirst; const oldTask = wxSocket(), task = wxSocket(), errors = [];
+  const wxApi = { cloud: { init() {}, connectContainer() { return ++calls === 1 ? new Promise(resolve => { finishFirst = resolve; }) : Promise.resolve({ socketTask: task }); } } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, timeoutMs: 15, retryDelayMs: 1, onError: value => errors.push(value) });
+  t.after(() => client.close());
+  const pending = client.create('greenhouse', 'easy'); timers.tick(16); await Promise.resolve();
+  assert.equal(calls, 2); task.handlers.open(); task.message(room);
+  finishFirst({ socketTask: oldTask }); await pending;
+  assert.equal(oldTask.closed, 1); assert.equal(oldTask.sent.length, 0); assert.equal(task.sent.length, 1); assert.deepEqual(errors, []);
+});
+
+test('WeChat room acknowledgement timeout is distinct and cannot duplicate create or join', async t => {
+  const timers = controlledTimeouts(t);
+  for (const operation of ['create', 'join']) {
+    let calls = 0; const task = wxSocket(), errors = [];
+    const wxApi = { cloud: { init() {}, connectContainer: async () => { calls++; return { socketTask: task }; } } };
+    const client = createMultiplayerClient({ platform: 'wechat', wxApi, timeoutMs: 10, retryDelayMs: 1, onError: value => errors.push(value) });
+    t.after(() => client.close());
+    await (operation === 'create' ? client.create('greenhouse', 'easy') : client.join('123456'));
+    task.handlers.open(); timers.tick(25);
+    assert.equal(calls, 1); assert.equal(task.sent.length, 1); assert.equal(task.closed, 1);
+    assert.equal(errors.length, 1); assert.match(errors[0], /房间响应.*TIMEOUT/);
+  }
+});
+
+test('WeChat transient attempts are bounded and socket errors retain only safe codes', async t => {
+  const timers = controlledTimeouts(t);
+  let calls = 0; const errors = [];
+  const wxApi = { cloud: { init() {}, async connectContainer() { calls++; throw { errCode: 102002, errMsg: 'token=secret' }; } } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, retryDelayMs: 1, onError: value => errors.push(value) });
+  await client.create('greenhouse', 'easy'); timers.tick(1); await Promise.resolve();
+  assert.equal(calls, 2); assert.equal(errors.length, 1); assert.match(errors[0], /云连接.*102002/); assert.doesNotMatch(errors[0], /secret/);
+});
+
+test('WeChat send failure cannot start a heartbeat or replay a possibly delivered join', async t => {
+  const timers = controlledTimeouts(t), task = wxSocket(), errors = [];
+  let calls = 0, intervals = 0;
+  t.mock.method(globalThis, 'setInterval', () => { intervals++; return 1; });
+  task.send = ({ fail }) => fail({ errCode: 102002, errMsg: 'private send payload' });
+  const wxApi = { cloud: { init() {}, connectContainer: async () => { calls++; return { socketTask: task }; } } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, retryDelayMs: 1, onError: value => errors.push(value) });
+  await client.join('123456'); task.handlers.open(); timers.tick(30000);
+  assert.equal(calls, 1); assert.equal(intervals, 0); assert.equal(task.closed, 1);
+  assert.equal(errors.length, 1); assert.match(errors[0], /消息发送.*102002/); assert.doesNotMatch(errors[0], /private send/);
+});
+
+test('WeChat close preserves its numeric status without disclosing the raw reason or retrying combat', async t => {
+  const timers = controlledTimeouts(t), task = wxSocket(), errors = [];
+  let calls = 0;
+  const wxApi = { cloud: { init() {}, connectContainer: async () => { calls++; return { socketTask: task }; } } };
+  const client = createMultiplayerClient({ platform: 'wechat', wxApi, onError: value => errors.push(value) });
+  await client.create('greenhouse', 'easy'); task.handlers.open(); task.message(room);
+  task.handlers.close({ code: 1006, reason: 'secret identity' }); timers.tick(30000);
+  assert.equal(calls, 1); assert.equal(errors.length, 1); assert.match(errors[0], /连接已断开.*1006/); assert.doesNotMatch(errors[0], /secret identity/);
 });
 
 test('foregrounding before the background pause acknowledgement stays frozen until an explicit continue', () => {

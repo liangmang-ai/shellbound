@@ -11,7 +11,7 @@ const observeText = async page => page.addInitScript(() => {
   const original = CanvasRenderingContext2D.prototype.fillText;
   window.__shellboundTextDraws = [];
   CanvasRenderingContext2D.prototype.fillText = function(value, x, y, maxWidth) {
-    if (this.font.includes('PingFang SC')) {
+    if (this.font.includes('sans-serif')) {
       const metric = this.measureText(String(value)), matrix = this.getTransform(), rect = this.canvas.getBoundingClientRect();
       const corners = [[x - metric.actualBoundingBoxLeft, y - metric.actualBoundingBoxAscent],
         [x + metric.actualBoundingBoxRight, y + metric.actualBoundingBoxDescent]];

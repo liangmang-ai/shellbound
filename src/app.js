@@ -2,10 +2,9 @@ import { Game, MAPS, WEAPONS, WEAPON_ORDER, GRENADE_RULES, DIFFICULTIES, BOOST_R
 import { drawArena, drawEgg } from './render.js';
 import { findAimTarget } from './aim.js';
 import { createMultiplayerClient, NetworkGame } from './multiplayer.js';
-import { UI_COLORS, drawSurface, drawButtonSurface, drawDifficultySegment } from './ui.js';
 
-const C = UI_COLORS;
-const FONT = '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
+const C = { bg: '#13242a', panel: '#21363b', line: '#526b68', ink: '#fff6e7', muted: '#b5c9c6', lime: '#d3efa3', teal: '#b2e3ca', coral: '#ffb196' };
+const FONT = 'sans-serif';
 const weaponIds = WEAPON_ORDER;
 const mapLabels = { greenhouse: ['汽泡工坊', '爆破油桶 · 加速穿行'], candyloop: ['星糖回廊', '中心岛 · 双环绕行'] };
 const difficultyHints = { easy: '怪物更少更慢，适合轻松突围', normal: '熟悉走位，迎接无尽攻势', hard: '更多怪物，更紧凑的攻势' };
@@ -16,8 +15,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   let size = { width, height, pixelRatio }, layout, game = null, screen = 'menu', selectedMap = MAPS[0].id;
   let paused = false, help = false, weaponPicker = false, lastTimestamp = null, clock = 0, pointer = null, shooting = false;
   let buttons = [], touches = new Map(), keys = new Set(), actions = {}, toast = '', toastUntil = 0, resultSaved = false;
+  let pressFeedback = null;
   let grenadePointer = null;
-  let pressedButton = null;
   let network = null, connectionId = 0;
   let backgrounded = false, backgroundPauseRequested = false;
   let coop = { view: 'select', code: '', room: null, message: '' };
@@ -42,7 +41,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const w = screen === 'game' ? size.width / scale : compact ? 960 : 1280;
     const h = screen === 'game' ? size.height / scale : baseHeight;
     layout = { w, h, compact, scale, ox: (size.width - w * scale) / 2, oy: (size.height - h * scale) / 2 };
-    buttons = [];
+    buttons = []; pressFeedback = null;
     clearInput();
     if (game?.online && isPortrait() && !paused) pause(false);
   }
@@ -68,7 +67,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     };
   }
   function pauseBounds() {
-    return weaponPicker ? { x: 248, y: 366, w: 102, h: 48 } : { x: 52, y: 156, w: 102, h: 48 };
+    return weaponPicker ? { x: 228, y: 366, w: 122, h: 56 } : { x: 52, y: 156, w: 112, h: 64 };
   }
   // Use a physical-pixel threshold so a small thumb wobble does not switch
   // from assisted fire to manual aim on a small landscape screen.
@@ -211,54 +210,28 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
 
   function rounded(x, y, w, h, radius = 14, fill, stroke) {
+    radius = Math.min(radius, w / 2, h / 2);
     ctx.beginPath(); ctx.moveTo(x + radius, y); ctx.lineTo(x + w - radius, y); ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
     ctx.lineTo(x + w, y + h - radius); ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
     ctx.lineTo(x + radius, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - radius); ctx.lineTo(x, y + radius); ctx.quadraticCurveTo(x, y, x + radius, y); ctx.closePath();
     if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
   }
   function text(value, x, y, fontSize = 18, color = C.ink, weight = 650, align = 'left') {
-    ctx.font = `${weight} ${fontSize}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillText(String(value), x, y);
+    // Use basic font shorthand instead of variable-font weights such as 650.
+    ctx.font = `${weight >= 700 ? 'bold' : 'normal'} ${fontSize}px ${FONT}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillText(String(value), x, y);
   }
-  // Screen-space sizes use window pixels, independent of the backing-store DPR.
-  // Keep text readable when the design canvas shrinks on short landscape screens.
-  function screenFont(designSize, minimum, maximum = Infinity) {
-    return clamp(designSize, Math.ceil(minimum / layout.scale), Math.max(Math.ceil(minimum / layout.scale), Math.floor(maximum / layout.scale)));
+  const menuFont = (fontSize, minimum = 18) => Math.max(fontSize, minimum / layout.scale);
+  function pressOffset(label, x, y, w, h) {
+    if (!pressFeedback || pressFeedback.until <= clock || pressFeedback.screen !== screen || pressFeedback.view !== coop.view
+      || pressFeedback.label !== label || pressFeedback.x !== x || pressFeedback.y !== y || pressFeedback.w !== w || pressFeedback.h !== h) return 0;
+    return 2 * ((pressFeedback.until - clock) / .14) ** 2;
   }
-  function screenHeight(designSize, minimum) { return Math.max(designSize, Math.ceil(minimum / layout.scale)); }
-  function buttonIcon(kind, x, y, color) {
-    ctx.save(); ctx.translate(x, y); ctx.fillStyle = color; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    if (kind === 'play') { ctx.beginPath(); ctx.moveTo(-5, -8); ctx.lineTo(8, 0); ctx.lineTo(-5, 8); ctx.closePath(); ctx.fill(); }
-    else if (kind === 'duo') {
-      for (const [dx, dy] of [[-6, -3], [6, 3]]) { ctx.beginPath(); ctx.ellipse(dx, dy, 6, 8, -.15, 0, Math.PI * 2); ctx.stroke(); }
-    } else if (kind === 'plus') { line(-7, 0, 7, 0, color); line(0, -7, 0, 7, color); }
-    else if (kind === 'back') { ctx.beginPath(); ctx.moveTo(3, -6); ctx.lineTo(-3, 0); ctx.lineTo(3, 6); ctx.stroke(); }
-    else { for (const dx of [-7, 0, 7]) { ctx.beginPath(); ctx.arc(dx, 0, 2, 0, Math.PI * 2); ctx.fill(); } }
-    ctx.restore();
-  }
-  function button(x, y, w, h, label, callback, { fill = C.panel, color = C.ink, border = null, fontSize = 22, active = true, weight = 650, icon, minHit = 0, minFont = 0, maxFont = Infinity, minHeight = 0 } = {}) {
-    fontSize = screenFont(fontSize, minFont, maxFont);
-    h = screenHeight(h, minHeight);
-    const pressed = pressedButton?.label === label ? clamp((pressedButton.until - clock) / .16, 0, 1) : 0;
-    const offset = drawButtonSurface(ctx, x, y, w, h, { fill, border, active, pressed });
-    ctx.save(); if (!active) ctx.globalAlpha *= .7;
-    ctx.font = `${weight} ${fontSize}px ${FONT}`;
-    const iconScale = minFont ? Math.max(1, 14 / (16 * layout.scale)) : 1;
-    const showIcon = icon && ctx.measureText(label).width + 35 * iconScale + 24 / layout.scale <= w;
-    const textX = x + w / 2 + (showIcon ? 12 * iconScale : 0);
-    text(label, textX, y + h / 2 + offset, fontSize, color, weight, 'center');
-    if (showIcon) {
-      ctx.save(); ctx.translate(textX - ctx.measureText(label).width / 2 - 22 * iconScale, y + h / 2 + offset); ctx.scale(iconScale, iconScale);
-      buttonIcon(icon, 0, 0, color); ctx.restore();
-    }
-    ctx.restore();
-    if (active) {
-      const hitH = Math.max(h, minHit);
-      buttons.push({ x, y: y - (hitH - h) / 2, w, h: hitH, callback, label });
-    }
-  }
-  function playerPortrait(x, y, radius = 23, color = '#f5ebcc') {
-    rounded(x - radius, y - radius, radius * 2, radius * 2, radius, '#3a514c');
-    drawEgg(ctx, x, y + 1, { scale: radius / 27, color, angle: -.15, time: clock * 1000 });
+  function button(x, y, w, h, label, callback, { fill = C.panel, color = C.ink, border = C.line, fontSize = 19, active = true } = {}) {
+    const offset = active ? pressOffset(label, x, y, w, h) : 0, radius = Math.min(24, h / 2);
+    if (active && h >= 44) rounded(x, y + 3, w, h, radius, 'rgba(4,17,20,.32)');
+    rounded(x, y + offset, w, h, radius, fill, border === C.line ? 'rgba(179,213,199,.18)' : border);
+    text(label, x + w / 2, y + h / 2 + offset, fontSize, color, 700, 'center');
+    if (active) buttons.push({ x, y, w, h, callback, label });
   }
   function skillButton(role, label, callback, { color = C.ink, value = '', disabled = false, progress = 0 } = {}) {
     const { x, y, r } = controlBounds()[role];
@@ -291,7 +264,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       ctx.beginPath(); ctx.ellipse(x, cy + 3, 10, 13, -.3, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x - 5, cy - 9); ctx.lineTo(x + 2, cy - 15); ctx.lineTo(x + 12, cy - 10); ctx.stroke();
     }
-    text(role === 'grenade' || role === 'boost' ? `${label} ${value}` : label, x, y + (role === 'fire' ? 31 : 20), role === 'fire' ? 22 : 20, color, 800, 'center');
+    text(role === 'grenade' || role === 'boost' ? `${label} ${value}` : label, x, y + (role === 'fire' ? 31 : 20), role === 'fire' ? 20 : 18, color, 750, 'center');
     if (progress > 0) { ctx.beginPath(); ctx.arc(x, y, r - 5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress); ctx.strokeStyle = color; ctx.lineWidth = 4; ctx.stroke(); }
     ctx.restore();
     buttons.push({ x: x - r, y: y - r, w: r * 2, h: r * 2, cx: x, cy: y, r, role, callback, label });
@@ -329,126 +302,109 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function drawMenu() {
     const { compact, w, h } = layout;
     drawLogo(38, 27, compact);
-    const toolsX = compact ? 344 : w - 600;
-    button(toolsX, 28, 116, 46, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 19, minFont: 16, maxFont: 20, fill: '#243b3e', minHit: screenHeight(64, 44) });
-    button(toolsX + 128, 28, 126, 46, '操作指南', () => { audio?.pause(); help = true; }, { fontSize: 19, minFont: 16, maxFont: 20, fill: '#243b3e', minHit: screenHeight(64, 44) });
+    button(platform === 'wechat' ? 320 : w - 278, 30, 100, 40, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 18 });
+    button(platform === 'wechat' ? 432 : w - 166, 30, 126, 40, '操作指南', () => { audio?.pause(); help = true; }, { fontSize: 18 });
     if (!compact) {
-      text('无尽突围 / 并肩作战', 64, 141, 21, C.teal, 750);
+      text('无尽突围 / 并肩作战', 64, 141, 18, C.teal, 700);
       text('守住最后', 60, 223, 76, C.ink, 800);
       text('一颗蛋。', 60, 311, 76, C.lime, 800);
-      text('握紧武器，穿过包围。', 65, 397, 22, C.muted);
-      text('选一张地图，迎接无尽攻势。', 65, 433, 22, C.muted);
+      text('握紧武器，穿过包围。', 65, 397, 20, C.muted);
+      text('选一张地图，迎接无尽攻势。', 65, 430, 20, C.muted);
       drawPoster(311, 589, 1.24);
-      text('6 种枪械  /  盾牌防御  /  手雷清场', 64, 740, 22, C.teal, 750);
-      text('选择战区', 713, 143, 30, C.ink, 800);
-      text('选好难度，随时出发。', 713, 182, 21, C.muted);
+      text('6 种枪械', 64, 740, 20, C.ink, 700);
+      text('盾牌防御', 195, 740, 20, C.ink, 700);
+      text('手雷清场', 325, 740, 20, C.ink, 700);
+      text('选择战区', 713, 143, 27, C.ink, 750);
+      text('每张地图，都是一种新的走位。', 713, 178, 18, C.muted);
     } else {
-      text('守住最后', 37, 139, 52, C.ink, 800); text('一颗蛋。', 37, 201, 52, C.lime, 800);
-      text('无尽攻势 / 一人突围 / 双人并肩', 40, 258, 20, C.muted);
-      drawPoster(221, 384, .83);
-      text('盾牌挡伤害 · 手雷破包围', 40, h - 31, 20, C.teal, 750);
+      text('守住最后', 37, 132, 49, C.ink, 800); text('一颗蛋。', 37, 191, 49, C.lime, 800);
+      text('原创角色 / 无尽攻势 / 六种枪械', 40, 251, 20, C.muted);
+      drawPoster(229, 375, .84);
+      text('盾牌挡伤害 · 手雷破包围', 40, h - 32, 20, C.teal, 700);
     }
-    const x = compact ? 468 : 710, top = compact ? screenHeight(100, 60) : 210, cardW = compact ? 456 : 500, cardH = compact ? 92 : 165, gap = compact ? 12 : 18;
+    const x = compact ? 500 : 710, top = compact ? 90 : 210, cardW = compact ? 420 : 500, cardH = compact ? 108 : 165, gap = compact ? 12 : 18;
     MAPS.forEach((map, i) => {
-      const y = top + i * (cardH + gap), selected = selectedMap === map.id, label = mapLabels[map.id] || [map.name || map.id, ''];
-      drawSurface(ctx, x, y, cardW, cardH, { radius: 26, fill: selected ? '#2b443d' : C.panel, border: selected ? '#779a7f' : null, elevated: selected });
-      const mw = compact ? 105 : 159, mh = compact ? 68 : 131;
-      mapPreview(map, x + 12, y + 12, mw, mh);
-      const tx = x + mw + 28;
-      text(`0${i + 1}${selected ? '  ✓' : ''}`, tx, y + (compact ? 19 : 34), 16, selected ? C.lime : C.muted, 600);
-      text(label[0], tx, y + (compact ? 45 : 76), screenFont(compact ? 26 : 28, 20, 24), C.ink, 700);
-      text(label[1], tx, y + (compact ? 74 : 116), screenFont(compact ? 18 : 20, 14, 18), C.muted, 500);
+      const y = top + i * (cardH + gap), selected = selectedMap === map.id, label = mapLabels[map.id] || [map.name || map.id, '', ''];
+      rounded(x, y, cardW, cardH, 26, selected ? '#2e493f' : C.panel, selected ? '#8fb59a' : undefined);
+      const mw = compact ? 116 : 159, mh = compact ? 78 : 131;
+      mapPreview(map, x + 15, y + 15, mw, mh);
+      const tx = x + mw + 31;
+      text(`0${i + 1}${selected ? '  ✓' : ''}`, tx, y + (compact ? 23 : 34), 18, selected ? C.lime : C.muted, 700);
+      text(label[0], tx, y + (compact ? 53 : 76), compact ? 26 : 30, C.ink, 800);
+      text(label[1], tx, y + (compact ? 83 : 116), compact ? 18 : 20, C.muted);
       buttons.push({ x, y, w: cardW, h: cardH, callback: () => { selectedMap = map.id; }, label: label[0] });
     });
-    const difficultyY = compact ? 310 : top + (cardH + gap) * 2 + 5;
-    const difficultyW = cardW / 3, difficultyH = screenHeight(64, 44);
-    drawSurface(ctx, x, difficultyY, cardW, difficultyH, { radius: 32, fill: '#1a2e32' });
+    const difficultyY = top + (cardH + gap) * 2 + 5;
+    const difficultyW = cardW / 3, difficultyH = compact ? 64 : 54;
+    rounded(x, difficultyY, cardW, difficultyH, difficultyH / 2, '#152a2e');
     Object.values(DIFFICULTIES).forEach((difficulty, i) => {
-      const selected = selectedDifficulty === difficulty.id;
-      const dx = x + i * difficultyW;
-      const pressed = pressedButton?.label === difficulty.label ? clamp((pressedButton.until - clock) / .16, 0, 1) : 0;
-      drawDifficultySegment(ctx, dx + 5, difficultyY + 5, difficultyW - 10, difficultyH - 10, { selected, pressed });
-      text(difficulty.label, dx + difficultyW / 2, difficultyY + difficultyH / 2, screenFont(compact ? 24 : 23, 18, 20), selected ? C.lime : C.muted, selected ? 650 : 550, 'center');
+      const selected = selectedDifficulty === difficulty.id, dx = x + i * difficultyW;
+      const offset = pressOffset(difficulty.label, dx, difficultyY, difficultyW, difficultyH);
+      if (selected) rounded(dx + 5, difficultyY + 5 + offset, difficultyW - 10, difficultyH - 10, (difficultyH - 10) / 2, '#3e5c48');
+      text(difficulty.label, dx + difficultyW / 2, difficultyY + difficultyH / 2 + offset, menuFont(23, 16), selected ? C.lime : C.muted, selected ? 700 : 400, 'center');
       buttons.push({ x: dx, y: difficultyY, w: difficultyW, h: difficultyH, label: difficulty.label,
         callback: () => { selectedDifficulty = difficulty.id; saveSettings(); } });
     });
-    text(difficultyHints[selectedDifficulty], x + cardW / 2, difficultyY + difficultyH + 19, screenFont(18, 14, 18), C.teal, 500, 'center');
-    const startY = compact ? 420 : difficultyY + 110, entryW = (cardW - 12) / 2;
-    button(x, startY, entryW, 72, '开始突围', start, { fill: C.lime, color: C.bg, fontSize: compact ? 30 : 28, minFont: 24, maxFont: 28, minHeight: 48, weight: 700, icon: 'play' });
-    button(x + entryW + 12, startY, entryW, 72, '双人合作', openCoop, { fill: '#294b43', color: C.teal, fontSize: compact ? 30 : 28, minFont: 24, maxFont: 28, minHeight: 48, icon: 'duo' });
-    if (size.height >= 350) text(best.score ? `最佳  ${best.score} 分 · 第 ${best.wave} 波` : '每局 3 次复活', x + cardW / 2, startY + 95, screenFont(17, 14, 18), C.muted, 500, 'center');
-  }
-  function drawCoopHeader() {
-    drawLogo(38, 27, layout.compact);
-    button(326, 28, 126, 46, '返回战区', menu, { fontSize: 19, minFont: 16, maxFont: 20, icon: 'back', minHit: screenHeight(64, 44) });
+    text(difficultyHints[selectedDifficulty], x + cardW / 2, difficultyY + (compact ? 82 : 74), 18, C.teal, 700, 'center');
+    const startY = difficultyY + 104;
+    const soloW = Math.round(cardW * .64);
+    button(x, startY, soloW, compact ? 58 : 64, '开始突围   →', start, { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(28) });
+    button(x + soloW + 10, startY, cardW - soloW - 10, compact ? 58 : 64, '双人合作', openCoop, { fill: '#2d4842', border: '#688a77', color: C.teal, fontSize: menuFont(28) });
+    text(best.score ? `最佳战绩  ${best.score} 分 · 第 ${best.wave} 波` : '每局 3 次复活 · 清关自动推进', x + cardW / 2, startY + (compact ? 78 : 94), 18, C.muted, 650, 'center');
   }
   function drawCoop() {
-    drawCoopHeader();
-    const cx = layout.w / 2, panelW = 680, panelX = cx - panelW / 2, panelY = layout.compact ? 104 : (layout.h - 474) / 2, panelH = layout.compact ? 424 : 474;
-    const actionSize = layout.compact ? 30 : 28;
-    const actionStyle = { fontSize: actionSize, minFont: 24, maxFont: 28, minHeight: 48 };
-    drawSurface(ctx, panelX, panelY, panelW, panelH, { radius: 36, elevated: true });
-    if (coop.view !== 'join' || !layout.compact) text('双人合作', cx, panelY + 37, screenFont(28, 24, 28), C.ink, 700, 'center');
+    drawLogo(38, 27, layout.compact);
+    const cx = layout.w / 2, panelX = cx - 260, panelY = (layout.h - 430) / 2 + 20;
+    button(38, layout.h - 67, 170, 46, '返回地图选择', menu, { fontSize: 19 });
+    rounded(panelX, panelY + 4, 520, 430, 32, 'rgba(4,17,20,.25)');
+    rounded(panelX, panelY, 520, 430, 32, C.panel, 'rgba(179,213,199,.18)');
+    text('双人合作', cx, panelY + 38, 30, C.ink, 800, 'center');
     if (coop.view === 'join') {
-      const codeText = coop.code.padEnd(6, '·').split('').join('  ');
-      if (layout.compact) {
-        text('房间码', panelX + 24 / layout.scale, panelY + 21 / layout.scale, screenFont(18, 18, 20), C.muted, 500);
-        text(codeText, cx + 36 / layout.scale, panelY + 21 / layout.scale, screenFont(34, 28, 34), C.lime, 650, 'center');
-      } else {
-        text(codeText, cx, panelY + 87, screenFont(34, 28, 34), C.lime, 650, 'center');
-        text('输入 6 位房间码', cx, panelY + 123, screenFont(18, 16, 18), C.muted, 500, 'center');
-      }
-      const gridHeight = panelH * layout.scale - 56;
-      const keyHit = Math.min(56, Math.max(48, (gridHeight - 18) / 4));
-      const keyGap = (gridHeight - keyHit * 4) / 3;
+      text(coop.code.padEnd(6, '·').split('').join('  '), cx, panelY + 88, 35, C.lime, 800, 'center');
+      text('输入朋友的 6 位房间码', cx, panelY + 124, 18, C.muted, 650, 'center');
       ['1', '2', '3', '4', '5', '6', '7', '8', '9', '删除', '0', '加入房间'].forEach((value, index) => {
-        const x = panelX + 44 + index % 3 * 200;
-        const y = layout.compact ? panelY + (44 + Math.floor(index / 3) * (keyHit + keyGap)) / layout.scale : panelY + 147 + Math.floor(index / 3) * 65;
-        const hitH = layout.compact ? keyHit / layout.scale : screenHeight(64, 48);
-        const keyH = layout.compact ? (keyHit - 4) / layout.scale : 56;
+        const x = panelX + 30 + index % 3 * 155, y = panelY + 159 + Math.floor(index / 3) * 57;
         const join = value === '加入房间';
-        button(x, y + (hitH - keyH) / 2, 192, keyH, value, () => {
+        button(x, y, 145, 47, value, () => {
           if (join) connectCoop(true);
           else if (value === '删除') coop.code = coop.code.slice(0, -1);
           else if (coop.code.length < 6) coop.code += value;
-        }, { fontSize: join || value === '删除' ? 23 : 26, minFont: 20, maxFont: 24, weight: 600, minHit: hitH, fill: join && coop.code.length === 6 ? C.lime : '#2a4144', color: join && coop.code.length === 6 ? C.bg : C.ink, active: !join || coop.code.length === 6 });
+        }, { fontSize: value.length > 1 ? 23 : 27, fill: join && coop.code.length === 6 ? C.lime : '#182c31', color: join && coop.code.length === 6 ? C.bg : C.ink, active: !join || coop.code.length === 6 });
       });
       return;
     }
     if (coop.view === 'connecting') {
-      text('正在连接…', cx, panelY + 167, screenFont(24, 20, 24), C.teal, 600, 'center');
-      button(panelX + 70, panelY + 312, panelW - 140, 64, '取消连接', openCoop, actionStyle);
+      text('正在连接联机服务…', cx, panelY + 175, 25, C.teal, 700, 'center');
+      text('首次启动云端服务可能需要片刻', cx, panelY + 224, 18, C.muted, 650, 'center');
+      button(panelX + 50, panelY + 328, 420, 54, '取消连接', openCoop, { fontSize: menuFont(26) });
       return;
     }
     if (coop.view === 'error') {
-      text('房间连接已结束', cx, panelY + 108, screenFont(25, 20, 24), C.coral, 650, 'center');
-      const lines = String(coop.message).match(/.{1,25}/gu) || [];
-      lines.slice(0, 3).forEach((value, index) => text(value, cx, panelY + 162 + index * 33, screenFont(20, 16, 20), C.ink, 500, 'center'));
-      button(panelX + 70, panelY + 312, panelW - 140, 64, '重新创建或加入', openCoop, { ...actionStyle, fill: C.lime, color: C.bg });
+      text('房间连接已结束', cx, panelY + 110, 24, C.coral, 750, 'center');
+      const lines = String(coop.message).match(/.{1,23}/gu) || [];
+      lines.slice(0, 3).forEach((value, index) => text(value, cx, panelY + 163 + index * 31, 20, C.ink, 650, 'center'));
+      button(panelX + 50, panelY + 328, 420, 54, '重新创建或加入', openCoop, { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(26) });
       return;
     }
     if (coop.view === 'room' && coop.room) {
       const room = coop.room, host = room.playerId === room.hostId;
       const ready = room.players?.filter(player => player.connected !== false).length === 2;
-      text('房间码', cx - 136, panelY + 96, screenFont(26, 20, 22), C.muted, 550, 'center');
-      text(room.code, cx + 26, panelY + 96, screenFont(42, 32, 40), C.lime, 650, 'center');
-      text(`${mapLabels[room.mapId]?.[0] || room.mapId} · ${DIFFICULTIES[room.difficultyId]?.label || ''}`, cx, panelY + 145, screenFont(20, 17, 20), C.teal, 500, 'center');
+      text('把房间码告诉朋友', cx, panelY + 84, menuFont(22, 16), C.muted, 400, 'center');
+      text(room.code, cx, panelY + 136, 52, C.lime, 800, 'center');
+      text(`${mapLabels[room.mapId]?.[0] || room.mapId} · ${DIFFICULTIES[room.difficultyId]?.label || ''}`, cx, panelY + 189, 21, C.teal, 750, 'center');
       for (const [index, id] of ['p1', 'p2'].entries()) {
-        const player = room.players?.find(player => player.id === id), connected = player && player.connected !== false;
-        const cardX = panelX + 30 + index * 316, cardY = panelY + 183;
-        drawSurface(ctx, cardX, cardY, 304, 103, { radius: 26, fill: connected ? index ? '#294049' : '#2d443d' : '#1b2e33' });
-        playerPortrait(cardX + 43, cardY + 47, 28, index ? '#b6dcff' : '#f5ebcc');
-        text(connected ? `玩家 ${index + 1}` : '等待队友', cardX + 84, cardY + 33, screenFont(23, 18, 22), index ? '#b6dcff' : C.ink, 650);
-        text(connected ? `${id === room.playerId ? '你' : '队友'} · ${id === room.hostId ? '房主' : '已加入'}` : '分享房间码邀请', cardX + 84, cardY + 72, screenFont(18, 16, 18), connected ? C.teal : C.muted, 500);
+        const connected = room.players?.some(player => player.id === id && player.connected !== false);
+        text(`${index + 1}P ${id === room.playerId ? '你' : '队友'} · ${connected ? '已加入' : '等待加入'}`, cx - 120 + index * 240, panelY + 253, 21, index ? '#a9dbff' : C.ink, 750, 'center');
       }
-      button(panelX + 70, panelY + Math.min(308, 381 - screenHeight(64, 48)), panelW - 140, 64, host ? ready ? '开始双人突围' : '等待队友加入' : '等待房主开始', () => network?.start(),
-        { ...actionStyle, active: host && ready, fill: host && ready ? C.lime : '#29413e', color: host && ready ? C.bg : C.muted, icon: host && ready ? 'play' : undefined });
-      if (coop.message) text(coop.message, cx, panelY + 405, screenFont(18, 14, 18), C.coral, 500, 'center');
+      button(panelX + 50, panelY + 315, 420, 57, host ? ready ? '开始双人突围' : '等待队友加入' : '等待房主开始', () => network?.start(),
+        { active: host && ready, fill: host && ready ? C.lime : C.bg, color: host && ready ? C.bg : C.muted, border: host && ready ? C.lime : C.line, fontSize: menuFont(28) });
+      text(coop.message || '离开或断线会结束本房间', cx, panelY + 398, 18, coop.message ? C.coral : C.muted, 650, 'center');
       return;
     }
-    text(`${mapLabels[selectedMap]?.[0]} · ${DIFFICULTIES[selectedDifficulty].label}`, cx, panelY + 103, screenFont(20, 17, 20), C.teal, 500, 'center');
-    button(panelX + 70, panelY + 157, panelW - 140, 72, '创建房间', () => connectCoop(), { ...actionStyle, fill: C.lime, color: C.bg, icon: 'plus' });
-    button(panelX + 70, panelY + 263, panelW - 140, 72, '输入房间码加入', () => { coop.view = 'join'; coop.code = ''; }, { ...actionStyle, fill: '#294b43', color: C.teal, icon: 'code' });
+    text('和朋友一起守住战场', cx, panelY + 94, 23, C.teal, 750, 'center');
+    text(`${mapLabels[selectedMap]?.[0]} · ${DIFFICULTIES[selectedDifficulty].label}`, cx, panelY + 144, 21, C.muted, 650, 'center');
+    button(panelX + 50, panelY + 205, 420, 60, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(28) });
+    button(panelX + 50, panelY + 284, 420, 60, '输入房间码加入', () => { coop.view = 'join'; coop.code = ''; }, { fill: '#2d4842', border: '#688a77', color: C.teal, fontSize: menuFont(28) });
   }
   function bar(x, y, w, value, max, color) { rounded(x, y, w, 7, 3, '#34464a'); if (value > 0) rounded(x, y, Math.max(6, w * clamp(value / max, 0, 1)), 7, 3, color); }
   function drawHUD() {
@@ -478,11 +434,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text(`${game.difficulty.label} · 第 ${game.wave} 波`, w / 2, 40, 22, C.lime, 800, 'center');
     text(`剩余 ${game.waveTotal - game.waveKills}   ·   ${game.score} 分`, w / 2, 68, 18, C.ink, 700, 'center');
     const pause = pauseBounds();
-    button(pause.x, pause.y, pause.w, pause.h, 'Ⅱ 暂停', togglePause, { fill: 'rgba(16,30,37,.9)', fontSize: 21 });
-    if (game.intermissionRemaining > 0) {
-      rounded(w / 2 - 102, 100, 204, 40, 14, 'rgba(16,30,37,.92)', C.teal);
-      text(`下一波 · ${Math.max(1, Math.ceil(game.intermissionRemaining))}`, w / 2, 120, 25, C.teal, 800, 'center');
-    }
+    button(pause.x, pause.y, pause.w, pause.h, 'Ⅱ 暂停', togglePause, { fill: 'rgba(16,30,37,.9)', fontSize: 18 });
     skillButton('fire', '开火', () => {}, { color: C.lime, disabled: ammo.reloadRemaining > 0 });
     skillButton('boost', '爆发', activateBoost, { color: '#ffdd83', value: p.boostCharges, disabled: p.boostCharges <= 0 && p.boostRemaining <= 0, progress: Math.min(1, p.boostRemaining / BOOST_RULES.duration) });
     skillButton('grenade', '手雷', () => {}, { color: '#f5cc92', value: p.grenades, disabled: p.grenades <= 0 });
@@ -525,7 +477,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       line(pointer.x, pointer.y - 16, pointer.x, pointer.y - 7, C.lime); line(pointer.x, pointer.y + 7, pointer.x, pointer.y + 16, C.lime);
     }
     if (toastUntil > clock && !paused && !help && game.status === 'playing' && !boss) {
-      ctx.font = `700 18px ${FONT}`;
+      ctx.font = `bold 18px ${FONT}`;
       const tw = Math.min(440, ctx.measureText(toast).width + 44), controls = controlBounds();
       const tx = clamp(layout.w / 2, controls.move.x + controls.move.r + 16 + tw / 2, controls.boost.x - controls.boost.r - 16 - tw / 2);
       rounded(tx - tw / 2, layout.h - 52, tw, 34, 17, 'rgba(16,30,37,.86)');
@@ -542,9 +494,9 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text(teammatePaused ? '队友暂停了战斗' : '喘口气，再出发。', layout.w / 2, y + 49, 31, C.ink, 750, 'center');
     text(`当前${game.difficulty.label}难度 · 战场与倒计时已暂停`, layout.w / 2, y + 88, 18, C.muted, 650, 'center');
     button(x + 28, y + 123, 384, 48, teammatePaused ? '等待队友继续' : '继续突围', continueGame, { fill: C.lime, border: C.lime, color: C.bg, active: !teammatePaused });
-    button(x + 28, y + 184, 184, 47, game.online ? '离开房间' : '重新开始', game.online ? menu : start, { fontSize: 24 }); button(x + 228, y + 184, 184, 47, '返回战区', menu, { fontSize: 24 });
-    button(x + 28, y + 245, 184, 47, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 23 });
-    button(x + 228, y + 245, 184, 47, aimAssist ? '辅助瞄准：开' : '辅助瞄准：关', toggleAim, { fontSize: 21 });
+    button(x + 28, y + 184, 184, 47, game.online ? '离开房间' : '重新开始', game.online ? menu : start, { fontSize: 20 }); button(x + 228, y + 184, 184, 47, '返回战区', menu, { fontSize: 20 });
+    button(x + 28, y + 245, 184, 47, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 18 });
+    button(x + 228, y + 245, 184, 47, aimAssist ? '辅助瞄准：开' : '辅助瞄准：关', toggleAim, { fontSize: 18 });
     text(game.online ? '全队已暂停 · 每位暂停玩家需点击继续' : '返回战区可调整难度 · Esc / P 继续', layout.w / 2, y + 326, 18, C.muted, 650, 'center');
   }
   function drawResult() {
@@ -556,7 +508,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     text(`第 ${game.wave} 波   /   ${game.kills} 次击败   /   ${Math.floor(game.time)} 秒`, layout.w / 2, y + 213, 18, C.teal, 700, 'center');
     button(x + 28, y + 251, 440, 48, game.revivesRemaining ? `免费复活 · 剩余 ${game.revivesRemaining} 次` : '本局复活已用完', revive, { fill: game.revivesRemaining ? C.lime : C.panel, border: game.revivesRemaining ? C.lime : C.line, color: game.revivesRemaining ? C.bg : C.muted, active: game.revivesRemaining > 0 });
     button(x + 28, y + 312, 440, 48, game.online ? '离开房间' : '再来一局   →', game.online ? menu : start, { fill: C.panel, border: C.line, color: C.ink });
-    button(x + 150, y + 373, 196, 32, '返回战区', menu, { fill: C.panel, border: C.panel, color: C.muted, fontSize: 22 });
+    button(x + 150, y + 373, 196, 28, '返回地图选择', menu, { fill: C.panel, border: C.panel, color: C.muted, fontSize: 18 });
   }
   function drawHelp() {
     shade(); const boxW = 780, boxH = layout.compact ? 426 : 490, x = (layout.w - boxW) / 2, y = (layout.h - boxH) / 2;
@@ -622,7 +574,10 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function activate(point) {
     const button = buttonAt(point);
-    if (button) { pressedButton = { label: button.label, until: clock + .16 }; button.callback(); return true; } return false;
+    if (button) {
+      pressFeedback = { label: button.label, x: button.x, y: button.y, w: button.w, h: button.h, screen, view: coop.view, until: clock + .14 };
+      button.callback(); return true;
+    } return false;
   }
   function handlePointer(type, point) {
     const p = logical(point);

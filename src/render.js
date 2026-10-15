@@ -539,13 +539,12 @@ export function drawArena(ctx, game, bounds = {}) {
       hurt: enemy ? num(actor.hitFlash) : num(actor.reviveProtectionRemaining) > 0 ? 0 : num(actor.invulnerability), weapon: actor.currentWeapon || 'pistol', time });
     ctx.restore();
     if (!enemy && game.online) {
-      const label = actor.id === 'p2' ? '玩家 2' : '玩家 1';
-      ctx.font = '800 17px "PingFang SC", "Microsoft YaHei", sans-serif';
+      const label = actor.id === 'p2' ? '2P' : '1P';
+      ctx.font = 'bold 16px sans-serif';
       const width = ctx.measureText(label).width + 20;
-      const labelY = num(actor.y) - num(actor.radius, 20) - 25;
-      ctx.fillStyle = '#18353de6'; roundRect(ctx, num(actor.x) - width / 2, labelY - 13, width, 26, 9); ctx.fill();
+      ctx.fillStyle = '#18353de6'; roundRect(ctx, num(actor.x) - width / 2, num(actor.y) + 34, width, 25, 9); ctx.fill();
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = actor.id === 'p2' ? '#cce8ff' : '#fff1c9';
-      ctx.fillText(label, num(actor.x), labelY);
+      ctx.fillText(label, num(actor.x), num(actor.y) + 47);
     }
     if (enemy && (actor.type === 'tank' || actor.hp < actor.maxHp)) {
       const ratio = Math.max(0, Math.min(1, num(actor.hp) / Math.max(1, num(actor.maxHp, 1)))), radius = num(actor.radius, 19);

@@ -70,32 +70,68 @@ export class NetworkGame {
 }
 
 export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.wx, WebSocketImpl = globalThis.WebSocket,
-  endpoint = browserSocketURL(), timeoutMs = 15000, now = () => globalThis.performance?.now?.() ?? Date.now(),
+  endpoint = browserSocketURL(), timeoutMs = 15000, retryDelayMs = 1200, now = () => globalThis.performance?.now?.() ?? Date.now(),
   onRoom = () => {}, onSnapshot = () => {}, onError = () => {}, onEnd = () => {} } = {}) {
   let socket = null, active = true, opened = false, connected = false, sequence = 0, timer = null;
   let intent = null, heartbeat = null;
+  let attempt = 0, retryTimer = null, intentSent = false;
   let snapshotMap = null, snapshotDifficulty = null, snapshotTick = -1;
   let pingSentAt = null, snapshotReceivedAt = null;
   let metrics = { rttMs: null, snapshotIntervalMs: null, snapshotBytes: null, snapshotCount: 0 };
-  const connectionFailure = platform === 'wechat'
-    ? '无法连接联机服务，请检查部署与身份权限；iOS 高性能+ 暂不支持'
-    : '无法连接联机服务，请检查网络或云端部署';
   const clearTimer = () => { if (timer !== null) clearTimeout(timer); timer = null; };
+  const closeTask = task => {
+    try { if (platform === 'wechat') task?.close({ code: 1000, reason: 'leave' }); else task?.close(1000, 'leave'); } catch { /* Already closed. */ }
+  };
+  // Do not surface arbitrary SDK text: it may contain URLs or identity headers.
+  // Preserve documented error codes and known gateway tokens for diagnosis.
+  function errorCode(error) {
+    for (const value of [error?.errCode, error?.code]) {
+      if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+      if (typeof value === 'string' && /^(?:-?\d+|[A-Z][A-Z0-9_]{1,40})$/.test(value)) return value;
+    }
+    if (Number.isInteger(error?.statusCode)) return `HTTP_${error.statusCode}`;
+    const message = String(error?.errMsg || error?.message || '');
+    return ['SERVICE_NOT_READY', 'SERVICE_FORBIDDEN', 'INTERNAL_REQUEST_FAIL', 'SYS_ERR'].find(code => message.includes(code)) || 'UNKNOWN';
+  }
+  function connectionProblem(stage, error) {
+    if (!active) return;
+    const code = errorCode(error);
+    // A room intent may have reached the authority even if its reply was lost.
+    // Only retry a transient failure before sending create/join, at most once.
+    if (platform === 'wechat' && !intentSent && attempt < 2 && stage !== '云初始化' &&
+      ['102002', 'SERVICE_NOT_READY', 'TIMEOUT'].includes(code)) {
+      clearTimer(); opened = false;
+      const task = socket; socket = null; closeTask(task);
+      retryTimer = setTimeout(() => { retryTimer = null; void openWeChatAttempt(); }, retryDelayMs);
+      return;
+    }
+    const advice = ['-501000', '-601031', '-601034', 'HTTP_401', 'HTTP_403'].includes(code)
+      ? '请检查云托管环境与身份权限'
+      : code === 'SERVICE_NOT_READY' ? '服务仍在启动，请稍后重试'
+        : ['102002', 'TIMEOUT'].includes(code) ? '等待超时，请稍后重试'
+          : stage === '连接关闭' ? '本局已结束，请重新创建或加入房间' : '请检查网络后重试';
+    const title = stage === '连接关闭' ? '连接已断开' : `${stage}失败`;
+    fail(`${title}（${code}），${advice}`, { stage, code, attempts: attempt });
+  }
+  const armTimeout = stage => {
+    clearTimer(); timer = setTimeout(() => connectionProblem(stage, { code: 'TIMEOUT' }), timeoutMs);
+  };
   const rawSend = message => {
     if (!active || !opened || !socket) return false;
     const data = JSON.stringify(message);
-    try { if (platform === 'wechat') socket.send({ data, fail: () => fail('网络发送失败，请重新创建或加入房间') }); else socket.send(data); return true; }
-    catch { fail('网络发送失败，请重新创建或加入房间'); return false; }
+    try { if (platform === 'wechat') socket.send({ data, fail: error => connectionProblem('消息发送', error) }); else socket.send(data); return true; }
+    catch (error) { connectionProblem('消息发送', error); return false; }
   };
   function cleanup() {
     clearTimer(); if (heartbeat !== null) clearInterval(heartbeat); heartbeat = null;
+    if (retryTimer !== null) clearTimeout(retryTimer); retryTimer = null;
     pingSentAt = null; snapshotReceivedAt = null;
     metrics = { rttMs: null, snapshotIntervalMs: null, snapshotBytes: null, snapshotCount: 0 };
     opened = false;
     const task = socket; socket = null;
-    try { if (platform === 'wechat') task?.close({ code: 1000, reason: 'leave' }); else task?.close(1000, 'leave'); } catch { /* Already closed. */ }
+    closeTask(task);
   }
-  function fail(message) { if (!active) return; active = false; cleanup(); onError(message); }
+  function fail(message, details) { if (!active) return; active = false; cleanup(); onError(message, details); }
   function receive(event) {
     if (!active) return;
     const raw = typeof event.data === 'string' ? event.data : String(event.data);
@@ -138,44 +174,64 @@ export function createMultiplayerClient({ platform = 'web', wxApi = globalThis.w
     else if (data.type === 'error') { if (!connected) fail(data.message || '无法进入房间'); else onError(data.message || '操作未完成', { recoverable: true }); }
     else if (data.type === 'ended') { active = false; cleanup(); onEnd(data.message || '房间已结束'); }
   }
-  function bind(task) {
-    if (!active) { try { task?.close(platform === 'wechat' ? {} : undefined); } catch { /* Stale async connection. */ } return; }
-    if (!task) { fail('联机连接创建失败'); return; }
+  function bind(task, attemptId) {
+    if (!active || attemptId !== attempt) { closeTask(task); return; }
+    if (!task) { connectionProblem('连接握手', { code: 'INVALID_SOCKET' }); return; }
     socket = task;
+    const current = () => active && socket === task && attemptId === attempt;
     const onOpen = () => {
-      if (!active || opened) return;
-      opened = true; rawSend(intent);
+      if (!current() || opened) return;
+      opened = true; intentSent = true;
+      armTimeout('房间响应');
+      if (!rawSend(intent) || !active) return;
       heartbeat = setInterval(() => {
         if (pingSentAt !== null) return;
         pingSentAt = now();
         if (!rawSend({ type: 'ping' })) pingSentAt = null;
       }, 15000);
     };
-    const onClose = () => { if (!active) return; fail('连接已断开，本局结束，请重新创建或加入房间'); };
+    const onClose = event => { if (current()) connectionProblem('连接关闭', event); };
+    const onMessage = event => { if (current()) receive(event); };
+    const onError = error => { if (current()) connectionProblem(opened ? '实时连接' : '连接握手', error); };
     if (platform === 'wechat') {
-      task.onOpen(onOpen); task.onMessage(receive); task.onError(() => fail(connectionFailure)); task.onClose(onClose);
+      // Register inbound/error listeners before onOpen can deliver the intent.
+      // The official API requires onOpen; it does not document readyState.
+      armTimeout('连接握手');
+      task.onMessage(onMessage); task.onError(onError); task.onClose(onClose); task.onOpen(onOpen);
     } else {
-      task.addEventListener('open', onOpen); task.addEventListener('message', receive);
-      task.addEventListener('error', () => fail(connectionFailure)); task.addEventListener('close', onClose);
+      task.addEventListener('message', onMessage); task.addEventListener('error', onError);
+      task.addEventListener('close', onClose); task.addEventListener('open', onOpen);
       if (task.readyState === 1) onOpen();
+    }
+  }
+  async function openWeChatAttempt() {
+    if (!active) return;
+    const attemptId = ++attempt;
+    armTimeout('云连接');
+    try {
+      const result = await wxApi.cloud.connectContainer({ config: { env: NETWORK_CONFIG.env }, service: NETWORK_CONFIG.service, path: '/ws' });
+      const task = result?.socketTask || result;
+      if (!active || attemptId !== attempt || retryTimer !== null) { closeTask(task); return; }
+      bind(task, attemptId);
+    } catch (error) {
+      if (active && attemptId === attempt && retryTimer === null) connectionProblem('云连接', error);
     }
   }
   async function connect(message) {
     if (intent || !active) return;
     intent = message;
-    timer = setTimeout(() => fail('连接超时，请检查联机服务后重试'), timeoutMs);
     try {
       if (platform === 'wechat') {
-        if (typeof wxApi?.cloud?.connectContainer !== 'function') { fail('当前微信不支持云托管联机，请更新微信后重试'); return; }
-        wxApi.cloud.init({ env: NETWORK_CONFIG.env, traceUser: true });
-        const result = await wxApi.cloud.connectContainer({ config: { env: NETWORK_CONFIG.env }, service: NETWORK_CONFIG.service, path: '/ws' });
-        bind(result?.socketTask || result);
+        if (typeof wxApi?.cloud?.connectContainer !== 'function' || typeof wxApi?.cloud?.init !== 'function') { fail('当前微信不支持云托管联机，请更新微信后重试'); return; }
+        try { wxApi.cloud.init({ env: NETWORK_CONFIG.env, traceUser: true }); }
+        catch (error) { connectionProblem('云初始化', error); return; }
+        await openWeChatAttempt();
       } else {
         if (!endpoint) { fail('网页版联机仅在本地开发启用，请使用微信小游戏联机'); return; }
         if (typeof WebSocketImpl !== 'function') { fail('当前浏览器不支持实时联机'); return; }
-        bind(new WebSocketImpl(endpoint));
+        attempt++; armTimeout('连接握手'); bind(new WebSocketImpl(endpoint), attempt);
       }
-    } catch { fail(connectionFailure); }
+    } catch (error) { connectionProblem('连接握手', error); }
   }
   return {
     create: (mapId, difficultyId) => connect({ type: 'create', mapId, difficultyId, compactSnapshots: true }),

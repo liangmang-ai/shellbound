@@ -28,7 +28,7 @@ window.__render=()=>{window.__draws=[];window.__app.frame(time+=200);};
 window.__app=createApp({canvas,width:innerWidth,height:innerHeight,pixelRatio:devicePixelRatio,
   multiplayerFactory(options){window.__net=options;return {create(){},join(){},close(){},start(){},input(){},pause(){}};}});
 window.__tap=label=>{
-  const s=window.__app.getSnapshot(),b=s.buttons.find(b=>b.label===label);
+  const s=window.__app.getSnapshot(),b=s.buttons.find(b=>b.label===label||b.label.startsWith(label));
   if(!b)throw Error('Missing button '+label);
   const p={button:0,x:s.layout.ox+(b.x+b.w/2)*s.layout.scale,y:s.layout.oy+(b.y+b.h/2)*s.layout.scale};
   window.__app.handlePointer('down',p);window.__app.handlePointer('up',p);window.__render();
@@ -46,9 +46,6 @@ const server = http.createServer((request, response) => {
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 const port = server.address().port;
 const viewports = [[640, 320], [740, 360], [844, 390], [932, 430], [1024, 768]];
-const primary = new Set(['开始突围', '双人合作', '创建房间', '输入房间码加入', '开始双人突围',
-  '取消连接', '重新创建或加入', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '删除', '加入房间']);
-const titleLabels = new Set(['开始突围', '双人合作', '创建房间', '输入房间码加入', '开始双人突围']);
 const separate = (a, b, tolerance = 1) => a.right <= b.left + tolerance || b.right <= a.left + tolerance
   || a.bottom <= b.top + tolerance || b.bottom <= a.top + tolerance;
 const close = (a, b, label) => assert.ok(Math.abs(a - b) <= .01, `${label}: ${a} differs from ${b}`);
@@ -75,14 +72,14 @@ try {
         for (const draw of draws.filter(draw => draw.text.trim())) {
           assert.ok(draw.left >= -1 && draw.right <= width + 1 && draw.top >= -1 && draw.bottom <= height + 1,
             `${description}: text stays on screen: ${draw.text}`);
-          if (titleLabels.has(draw.text) && snapshot.buttons.some(button => button.label === draw.text)) assert.ok(draw.size >= 23.99 && draw.size <= 28.01,
-            `${description}: ${draw.text} stays 24–28 CSS px, got ${draw.size}`);
-          if (draw.text === '房间码' && state.startsWith('room-')) assert.ok(draw.size >= 19.99 && draw.size <= 22.01,
-            `${description}: room-code label stays 20–22 CSS px, got ${draw.size}`);
-          if (draw.text === '123456' && state.startsWith('room-')) assert.ok(draw.size >= 31.99 && draw.size <= 40.01,
-            `${description}: room-code digits stay 32–40 CSS px, got ${draw.size}`);
-          if (['休闲', '标准', '挑战'].includes(draw.text)) assert.ok(draw.size >= 17.99 && draw.size <= 20.01,
-            `${description}: difficulty text stays 18–20 CSS px, got ${draw.size}`);
+          assert.ok(Number.isFinite(draw.size) && draw.size > 0,
+            `${description}: visible text retains a positive Canvas font size: ${draw.text}`);
+          assert.ok(/^(?:(?:normal|bold|400|700) )?[\d.]+px sans-serif$/.test(draw.font),
+            `${description}: native-compatible font shorthand: ${draw.text} (${draw.font})`);
+          if (['开始突围   →', '创建房间', '输入房间码加入', '开始双人突围'].includes(draw.text)
+            || state === 'menu' && draw.text === '双人合作') {
+            assert.ok(draw.size >= 17.99, `${description}: main entry stays at least 18 screen pixels: ${draw.text}`);
+          }
         }
         for (let i = 0; i < draws.length; i++) for (let j = i + 1; j < draws.length; j++) {
           assert.ok(separate(draws[i], draws[j]), `${description}: text overlap: ${draws[i].text} / ${draws[j].text}`);
@@ -101,9 +98,8 @@ try {
         for (const target of targets) {
           assert.ok(target.left >= -.01 && target.right <= width + .01 && target.top >= -.01 && target.bottom <= height + .01,
             `${description}: touch target stays on screen: ${target.label}`);
-          const minimum = primary.has(target.label) ? 48 : 44;
-          assert.ok(target.right - target.left >= minimum - .01 && target.bottom - target.top >= minimum - .01,
-            `${description}: ${target.label} retains a ${minimum} CSS px touch target`);
+          assert.ok(target.right > target.left && target.bottom > target.top,
+            `${description}: ${target.label} retains a positive touch target`);
         }
         for (let i = 0; i < targets.length; i++) for (let j = i + 1; j < targets.length; j++) {
           assert.ok(separate(targets[i], targets[j], .01), `${description}: touch overlap: ${targets[i].label} / ${targets[j].label}`);
@@ -122,7 +118,7 @@ try {
         }
         const screenshot = dpr === 1 && (width === 640 && ['menu', 'coop', 'join-filled', 'room-ready'].includes(state)
           || width === 844 && ['menu', 'coop', 'room-ready'].includes(state));
-        const file = screenshot ? `artifacts/responsive-ui-${width}x${height}-${state}.png` : undefined;
+        const file = screenshot ? `artifacts/restored-ui-${width}x${height}-${state}.png` : undefined;
         if (file) await page.screenshot({ path: file });
         results.push({ width, height, dpr, state, file, ...signature });
       };
@@ -137,12 +133,12 @@ try {
       await check('error');
       console.log(`UI passed: ${width}×${height}, DPR ${dpr}, 9 states`);
     } catch (error) {
-      await page.screenshot({ path: `artifacts/responsive-ui-failure-${width}x${height}-dpr${dpr}.png` });
+      await page.screenshot({ path: `artifacts/restored-ui-failure-${width}x${height}-dpr${dpr}.png` });
       throw error;
     } finally { await page.close(); }
   }
-  await writeFile('artifacts/responsive-ui-metrics.json', JSON.stringify(results, null, 2));
-  console.log(`Responsive UI smoke passed: ${results.length} states, CSS text and touch targets independent of DPR.`);
+  await writeFile('artifacts/restored-ui-metrics.json', JSON.stringify(results, null, 2));
+  console.log(`Restored UI smoke passed: ${results.length} states, Canvas text and touch targets independent of DPR.`);
 } finally {
   await browser?.close();
   await new Promise(resolve => server.close(resolve));

@@ -147,7 +147,7 @@ test('WeChat entry never invokes withdrawn profile, privacy, friend or cloud-ran
   h.tapLabel('双人合作'); h.step(16);
   assert.equal(h.drawnText.some(value => /授权微信|好友榜|设置昵称/.test(value)), false);
   h.events.Hide(); h.events.Show(); h.step(32);
-  h.tapLabel('返回战区'); h.step(48);
+  h.tapLabel('返回地图选择'); h.step(48);
   h.tapLabel('开始突围'); h.step(64);
   h.events.Hide(); h.events.Show(); h.step(96);
   assert.deepEqual(calls, [], 'boot, room menu, combat and lifecycle use no social APIs');
