@@ -104,7 +104,7 @@ for (const [width, height] of menuViewports) for (const pixelRatio of [1, 2, 3])
     h.callbacks.onRoom({ playerId: 'p1', hostId: 'p1', code: '123456', mapId: 'greenhouse', difficultyId: 'easy',
       players: [{ id: 'p1', connected: true }] });
     h.frame();
-    expectLogicalFont(h, '把房间码告诉朋友', Math.max(22, 16 / state.layout.scale)); expectLogicalFont(h, '123456', 52);
+    expectLogicalFont(h, '123456', 52);
     h.callbacks.onRoom({ playerId: 'p1', hostId: 'p1', code: '123456', mapId: 'greenhouse', difficultyId: 'easy',
       players: [{ id: 'p1', connected: true }, { id: 'p2', connected: true }] });
     h.frame();

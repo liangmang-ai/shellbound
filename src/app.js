@@ -7,7 +7,6 @@ const C = { bg: '#13242a', panel: '#21363b', line: '#526b68', ink: '#fff6e7', mu
 const FONT = 'sans-serif';
 const weaponIds = WEAPON_ORDER;
 const mapLabels = { greenhouse: ['汽泡工坊', '爆破油桶 · 加速穿行'], candyloop: ['星糖回廊', '中心岛 · 双环绕行'] };
-const difficultyHints = { easy: '怪物更少更慢，适合轻松突围', normal: '熟悉走位，迎接无尽攻势', hard: '更多怪物，更紧凑的攻势' };
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 
 export function createApp({ canvas, width, height, pixelRatio = 1, storage, platform = 'web', audio, multiplayerFactory = createMultiplayerClient, wxApi }) {
@@ -345,7 +344,6 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       buttons.push({ x: dx, y: difficultyY, w: difficultyW, h: difficultyH, label: difficulty.label,
         callback: () => { selectedDifficulty = difficulty.id; saveSettings(); } });
     });
-    text(difficultyHints[selectedDifficulty], x + cardW / 2, difficultyY + (compact ? 82 : 74), 18, C.teal, 700, 'center');
     const startY = difficultyY + 104;
     const soloW = Math.round(cardW * .64);
     button(x, startY, soloW, compact ? 58 : 64, '开始突围   →', start, { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(28) });
@@ -389,7 +387,6 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (coop.view === 'room' && coop.room) {
       const room = coop.room, host = room.playerId === room.hostId;
       const ready = room.players?.filter(player => player.connected !== false).length === 2;
-      text('把房间码告诉朋友', cx, panelY + 84, menuFont(22, 16), C.muted, 400, 'center');
       text(room.code, cx, panelY + 136, 52, C.lime, 800, 'center');
       text(`${mapLabels[room.mapId]?.[0] || room.mapId} · ${DIFFICULTIES[room.difficultyId]?.label || ''}`, cx, panelY + 189, 21, C.teal, 750, 'center');
       for (const [index, id] of ['p1', 'p2'].entries()) {
