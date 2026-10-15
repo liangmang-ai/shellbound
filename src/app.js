@@ -226,11 +226,22 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       || pressFeedback.label !== label || pressFeedback.x !== x || pressFeedback.y !== y || pressFeedback.w !== w || pressFeedback.h !== h) return 0;
     return 2 * ((pressFeedback.until - clock) / .14) ** 2;
   }
-  function button(x, y, w, h, label, callback, { fill = C.panel, color = C.ink, border = C.line, fontSize = 19, active = true } = {}) {
+  function button(x, y, w, h, label, callback, { fill = C.panel, color = C.ink, border = C.line, fontSize = 19, active = true, loading = false } = {}) {
     const offset = active ? pressOffset(label, x, y, w, h) : 0, radius = Math.min(24, h / 2);
     if (active && h >= 44) rounded(x, y + 3, w, h, radius, 'rgba(4,17,20,.32)');
     rounded(x, y + offset, w, h, radius, fill, border === C.line ? 'rgba(179,213,199,.18)' : border);
-    text(label, x + w / 2, y + h / 2 + offset, fontSize, color, 700, 'center');
+    const cy = y + h / 2 + offset;
+    if (loading) {
+      const r = Math.min(12, h / 4), gap = 8;
+      ctx.font = `bold ${fontSize}px ${FONT}`;
+      const labelWidth = ctx.measureText(label).width;
+      const left = x + (w - labelWidth - r * 2 - gap) / 2;
+      text(label, left + r * 2 + gap + labelWidth / 2, cy, fontSize, color, 700, 'center');
+      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineCap = 'round';
+      ctx.globalAlpha = .2; ctx.beginPath(); ctx.arc(left + r, cy, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(left + r, cy, r, clock * 5, clock * 5 + Math.PI * 1.4); ctx.stroke();
+      ctx.restore();
+    } else text(label, x + w / 2, cy, fontSize, color, 700, 'center');
     if (active) buttons.push({ x, y, w, h, callback, label });
   }
   function skillButton(role, label, callback, { color = C.ink, value = '', disabled = false, progress = 0 } = {}) {
@@ -369,7 +380,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
           if (join) connectCoop(true);
           else if (value === '删除') coop.code = coop.code.slice(0, -1);
           else if (coop.code.length < 6) coop.code += value;
-        }, { fontSize: value.length > 1 ? 23 : 27, fill: join && coop.code.length === 6 ? C.lime : '#182c31', color: join && coop.code.length === 6 ? C.bg : C.ink, active: !coop.connecting && (!join || coop.code.length === 6) });
+        }, { fontSize: value.length > 1 ? 23 : 27, fill: join && coop.code.length === 6 ? C.lime : '#182c31', color: join && coop.code.length === 6 ? C.bg : C.ink, active: !coop.connecting && (!join || coop.code.length === 6), loading: join && coop.connecting });
       });
       return;
     }
@@ -396,7 +407,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     }
     text('和朋友一起守住战场', cx, panelY + 94, 23, C.teal, 750, 'center');
     text(`${mapLabels[selectedMap]?.[0]} · ${DIFFICULTIES[selectedDifficulty].label}`, cx, panelY + 144, 21, C.muted, 650, 'center');
-    button(panelX + 50, panelY + 205, 420, 60, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(28), active: !coop.connecting });
+    button(panelX + 50, panelY + 205, 420, 60, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, border: C.lime, fontSize: menuFont(28), active: !coop.connecting, loading: coop.connecting });
     button(panelX + 50, panelY + 284, 420, 60, '输入房间码加入', () => { if (screen === 'coop' && coop.view === 'select' && !coop.connecting) { coop.view = 'join'; coop.code = ''; } }, { fill: '#2d4842', border: '#688a77', color: C.teal, fontSize: menuFont(28), active: !coop.connecting });
   }
   function bar(x, y, w, value, max, color) { rounded(x, y, w, 7, 3, '#34464a'); if (value > 0) rounded(x, y, Math.max(6, w * clamp(value / max, 0, 1)), 7, 3, color); }
