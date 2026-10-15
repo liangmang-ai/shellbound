@@ -13,7 +13,9 @@ const MAX_PENDING = 12;
 const finite = n => typeof n === 'number' && Number.isFinite(n);
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const send = (socket, data) => {
-  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
+  if (socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(data, (_key, value) => value instanceof Set ? [...value] : value));
+  return true;
 };
 
 export function cleanInput(value) {
@@ -123,13 +125,15 @@ export function createCoopServer(options = {}) {
         do { code = String(randomInt(100000, 1000000)); } while (rooms.has(code));
         const created = { code, mapId: message.mapId, difficultyId: message.difficultyId,
           members: new Map(), game: null, createdAt: now(), paused: false, pauseOwners: new Set(), pauseOwnerId: null, pausedAt: null, tick: 0, snapshotSeq: 0, events: [] };
-        member.id = 'p1'; member.room = created; created.members.set('p1', member); rooms.set(code, created); announce(created);
+        member.id = 'p1'; member.room = created; member.compactSnapshots = message.compactSnapshots === true;
+        created.members.set('p1', member); rooms.set(code, created); announce(created);
       } else {
         if (typeof message.code !== 'string' || !/^\d{6}$/.test(message.code)) return reject(member, '请输入 6 位房间码');
         const target = rooms.get(message.code);
         if (!target) return reject(member, '房间不存在或已结束');
         if (target.game || target.members.size >= 2) return reject(member, '房间已开始或人数已满');
-        member.id = 'p2'; member.room = target; target.members.set('p2', member); announce(target);
+        member.id = 'p2'; member.room = target; member.compactSnapshots = message.compactSnapshots === true;
+        target.members.set('p2', member); announce(target);
       }
       return;
     }
@@ -187,6 +191,7 @@ export function createCoopServer(options = {}) {
 
   wss.on('connection', (socket, identity) => {
     const member = { socket, identity, room: null, id: null, input: {}, actions: [], seq: -1,
+      compactSnapshots: false, snapshotMap: null, snapshotDifficulty: null,
       lastInputAt: now(), lastSeenAt: now(), connectedAt: now(), rateAt: now(), tokens: 120, alive: true };
     sessions.add(member); identities.set(identity, member);
     socket.on('pong', () => { member.alive = true; });
@@ -219,9 +224,15 @@ export function createCoopServer(options = {}) {
     const tick = ++room.snapshotSeq;
     for (const member of room.members.values()) {
       if (member.socket.bufferedAmount > 512 * 1024) { endRoom(room, '网络较慢，房间已结束，请检查网络后重试'); return; }
-      const view = room.game.snapshot(member.id);
+      // Static metadata is sent once per opt-in member, then reused by its client.
+      // Legacy clients retain the complete view on every frame. Both paths encode
+      // live projections synchronously once, without a stringify/parse clone.
+      const includeMetadata = member.snapshotMap !== room.game.map || member.snapshotDifficulty !== room.game.difficulty;
+      const view = room.game.networkSnapshot(member.id, { compact: member.compactSnapshots, includeMetadata });
       view.events = room.events.filter(event => !event.playerId || event.playerId === member.id || ['shot', 'grenade', 'revive'].includes(event.type));
-      send(member.socket, { type: 'snapshot', tick, paused: room.paused, pauseOwnerId: room.pauseOwnerId, pauseOwnerIds: [...room.pauseOwners], view });
+      if (send(member.socket, { type: 'snapshot', tick, paused: room.paused, pauseOwnerId: room.pauseOwnerId, pauseOwnerIds: [...room.pauseOwners], view })) {
+        member.snapshotMap = room.game.map; member.snapshotDifficulty = room.game.difficulty;
+      }
     }
     room.events = [];
   }

@@ -37,7 +37,7 @@ test('browser connects with ordered room intent, actions, seq and closes without
   const socket = FakeSocket.last;
   assert.deepEqual(socket.sent, []);
   socket.emit('open');
-  assert.deepEqual(socket.sent[0], { type: 'create', mapId: 'greenhouse', difficultyId: 'easy' });
+  assert.deepEqual(socket.sent[0], { type: 'create', mapId: 'greenhouse', difficultyId: 'easy', compactSnapshots: true });
   socket.message(room);
   socket.message({ type: 'snapshot', tick: 2, paused: true, pauseOwnerId: 'p1', view: fixture() });
   assert.equal(rooms.length, 1);
@@ -58,7 +58,7 @@ test('WeChat connects through cloud identity and never falls back to a public We
   await client.join('234567'); handlers.open();
   assert.deepEqual(calls[0], { env: NETWORK_CONFIG.env, traceUser: true });
   assert.deepEqual(calls[1], { config: { env: NETWORK_CONFIG.env }, service: NETWORK_CONFIG.service, path: '/ws' });
-  assert.deepEqual(sent[0], { type: 'join', code: '234567' });
+  assert.deepEqual(sent[0], { type: 'join', code: '234567', compactSnapshots: true });
   client.close();
   assert.equal(calls.at(-1), 'close');
 });
@@ -115,6 +115,210 @@ test('held one-shot inputs consume once, numeric slots include zero and rapid we
   assert.deepEqual(actions.at(-1), ['weapon', { weaponId: 'rifle' }], 'cycles use the pending weapon while the next snapshot is in flight');
   game.update(.001, { weaponSlot: 0 });
   assert.deepEqual(actions.at(-1), ['weapon', { weaponId: 'pistol' }]);
+});
+
+function movingView(time, overrides = {}) {
+  const view = fixture({ time, map: { id: 'presentation-test', width: 1280, height: 760, obstacles: [] } });
+  const x = 100 + time * 180;
+  view.player = { ...view.player, x, y: 100, angle: 0 };
+  view.players = [view.player, { ...view.player, id: 'p2', y: 160 }];
+  view.enemies = [{ id: 10, x, y: 220, angle: 0, hp: 40, radius: 17, speed: 180 }];
+  view.bullets = [{ id: 11, x, y: 280, angle: 0, vx: 180, vy: 0, radius: 3 }];
+  view.grenades = [{ id: 12, x, y: 340, angle: 0, vx: 180, vy: 0, radius: 7 }];
+  return Object.assign(view, overrides);
+}
+const quietClient = () => ({ input() {}, action() { return true; } });
+const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-7, `${message}: ${actual} != ${expected}`);
+
+test('20 Hz authority renders movement on every 60 Hz frame without changing inputs or combat state', () => {
+  const inputs = [];
+  const game = new NetworkGame({ ...quietClient(), input: value => inputs.push(value) }, movingView(0), 0);
+  const rendered = game.getRenderView();
+  let priorX = rendered.player.x, frameCount = 0, soundCount = 0;
+  for (let tick = 1; tick <= 8; tick++) {
+    const view = movingView(tick * .05, { events: [{ type: 'shot' }] });
+    view.player.hp = 100 - tick;
+    game.applyView(view, tick);
+    assert.equal(game.player, view.player, 'input and combat consumers retain authority');
+    assert.equal(rendered.player.hp, view.player.hp, 'damage is immediate, never interpolated');
+    const playerPose = rendered.player;
+    for (let frame = 0; frame < 3; frame++) {
+      game.update(1 / 60, { moveX: 1, aimX: 700, aimY: 800, shoot: true });
+      frameCount++;
+      if (tick > 1) near(rendered.player.x - priorX, 3, 'each display frame advances after the initial buffer fills');
+      for (const entity of [rendered.players[1], rendered.enemies[0], rendered.bullets[0], rendered.grenades[0]]) near(entity.x, rendered.player.x, 'all moving groups share the time axis');
+      assert.equal(rendered.player, playerPose, 'frames reuse the presentation entity');
+      assert.equal(game.player.x, view.player.x, 'display movement cannot mutate authority');
+      soundCount += game.events.length;
+      priorX = rendered.player.x;
+    }
+  }
+  assert.equal(frameCount, 24); assert.equal(soundCount, 8, 'each snapshot sound drains once');
+  assert.deepEqual(inputs.at(-1), { moveX: 1, moveY: 0, aimX: 700, aimY: 800, shoot: true });
+  game.aimTarget = { id: 10, x: 150, y: 220 };
+  assert.equal(rendered.aimTarget, game.aimTarget, 'late aim-assist changes reach rendering');
+  game.update(.2, { moveX: 1 });
+  near(rendered.player.x, game.player.x, 'packet loss stops at authority instead of predicting');
+});
+
+test('presentation uses the short angular arc, removes entities immediately and rejects stale poses and sounds', () => {
+  const first = movingView(0); first.player.angle = Math.PI - .1;
+  const game = new NetworkGame(quietClient(), first, 1);
+  const second = movingView(.05, { events: [{ type: 'shot' }] }); second.player.angle = -Math.PI + .1;
+  second.enemies.push({ id: 99, x: 500, y: 500, hp: 40 }); second.bullets = [];
+  game.applyView(second, 2); game.update(.05);
+  near(Math.abs(game.getRenderView().player.angle), Math.PI, 'angle crosses the wrap boundary');
+  assert.equal(game.getRenderView().enemies.find(enemy => enemy.id === 99).x, 500, 'new entities appear at authority');
+  assert.equal(game.getRenderView().bullets.length, 0, 'removed projectiles disappear immediately');
+  const position = game.getRenderView().player.x;
+  assert.equal(game.applyView(movingView(10, { events: [{ type: 'grenade' }] }), 1), false);
+  assert.equal(game.getRenderView().player.x, position);
+  assert.deepEqual(game.events, [{ type: 'shot' }]);
+  game.update(.025); assert.deepEqual(game.events, []);
+});
+
+test('pause, death, revive and teleport discontinuities snap instead of blending stale positions', () => {
+  const game = new NetworkGame(quietClient(), movingView(0), 0);
+  game.applyView(movingView(.05), 1); game.update(.01);
+  const paused = movingView(.1, { paused: true }); game.applyView(paused, 2);
+  near(game.getRenderView().player.x, paused.player.x, 'pause settles presentation');
+  game.update(.2); near(game.getRenderView().player.x, paused.player.x, 'paused view stays settled');
+  const resumed = movingView(.15); game.applyView(resumed, 3);
+  near(game.getRenderView().player.x, resumed.player.x, 'resume drops old interpolation');
+  const dead = movingView(.2, { status: 'dead' }); dead.player.hp = 0; game.applyView(dead, 4);
+  near(game.getRenderView().player.x, dead.player.x, 'death is immediate');
+  const survivor = movingView(.25, { status: 'dead' }); survivor.player.hp = 0; game.applyView(survivor, 5); game.update(.05);
+  near(game.getRenderView().player.x, survivor.player.x, 'dead local body stays authoritative');
+  near(game.getRenderView().players[1].x, (dead.players[1].x + survivor.players[1].x) / 2, 'living teammate still interpolates');
+  const revived = movingView(.3); revived.player.x = 700; game.applyView(revived, 6);
+  near(game.getRenderView().player.x, 700, 'revive appears at the new spawn');
+  const teleported = movingView(.35); teleported.player.x = 100; game.applyView(teleported, 7); game.update(.01);
+  near(game.getRenderView().player.x, 100, 'large jumps never sweep across the arena');
+});
+
+test('interpolation never draws a body or projectile through an obstacle and bounds jitter delay', () => {
+  const map = { id: 'presentation-test', width: 1280, height: 760, obstacles: [{ x: 103, y: 90, w: 3, h: 20 }, { x: 103, y: 270, w: 3, h: 20 }] };
+  const game = new NetworkGame(quietClient(), movingView(0, { map }), 0);
+  const latest = movingView(.05, { map }); game.applyView(latest, 1); game.update(.01);
+  near(game.getRenderView().player.x, latest.player.x, 'wall crossing snaps to valid authority');
+  near(game.getRenderView().bullets[0].x, latest.bullets[0].x, 'projectiles cannot draw a chord through walls');
+  const jittered = movingView(.18, { map }); game.applyView(jittered, 2);
+  assert.ok(game.presentation.time >= .105 - 1e-7, 'jitter cannot accumulate more than 75 ms of presentation delay');
+  game.update(.075); near(game.getRenderView().player.x, jittered.player.x, 'a stopped stream settles within 75 ms');
+});
+
+test('30 Hz simulation sampled at 20 Hz keeps steady 60 Hz visual speed across alternating 33/67 ms gaps', () => {
+  const game = new NetworkGame(quietClient(), movingView(0), 0);
+  let prior = null, checked = 0;
+  for (let frame = 1; frame <= 90; frame++) {
+    if (frame % 3 === 0) {
+      const tick = frame / 3;
+      game.applyView(movingView(Math.floor(tick * 1.5) / 30), tick);
+    }
+    game.update(1 / 60);
+    const x = game.getRenderView().player.x;
+    if (frame > 12) { near(x - prior, 3, 'alternating simulation gaps do not freeze or jump'); checked++; }
+    prior = x;
+  }
+  assert.equal(checked, 78);
+});
+
+for (const group of ['players', 'enemies', 'bullets', 'grenades']) {
+  for (const discontinuity of ['birth', 'teleport', 'wall corner']) {
+    test(`${group} never rewind after ${discontinuity} when later safe snapshots arrive`, () => {
+      const id = group === 'players' ? 'p2' : 101;
+      const map = { id: 'presentation-test', width: 1280, height: 760,
+        obstacles: discontinuity === 'wall corner' ? [{ x: 100, y: 150, w: 10, h: 10 }] : [] };
+      const makeView = (time, position, hp = 100) => {
+        const view = movingView(time, { map });
+        const entity = position && { id, ...position, hp, radius: 3, angle: 0, vx: 900, vy: 0 };
+        view[group] = group === 'players' ? [view.player, ...(entity ? [entity] : [])] : entity ? [entity] : [];
+        return view;
+      };
+      const initial = discontinuity === 'birth' ? null : discontinuity === 'teleport' ? { x: 100, y: 170 } : { x: 90, y: 140 };
+      const first = discontinuity === 'birth' ? { x: 100, y: 170 } : discontinuity === 'teleport' ? { x: 500, y: 170 } : { x: 120, y: 170 };
+      const step = discontinuity === 'wall corner' ? 15 : 45;
+      const game = new NetworkGame(quietClient(), makeView(0, initial), 0);
+      const entity = () => game.getRenderView()[group].find(candidate => candidate.id === id);
+      const positions = [];
+      for (let tick = 1; tick <= 3; tick++) {
+        const current = { ...first, x: first.x + (tick - 1) * step };
+        game.applyView(makeView(tick * .05, current, 100 - tick), tick);
+        assert.equal(entity().hp, 100 - tick, 'combat state updates before the display catches up');
+        assert.ok(game.presentation.time >= tick * .05 - .075 - 1e-7, 'lifecycle floors do not increase the shared buffer');
+        positions.push(entity().x);
+        for (let frame = 0; frame < 3; frame++) {
+          game.update(1 / 60); positions.push(entity().x);
+          assert.ok(entity().x <= current.x + 1e-7, 'presentation never extrapolates');
+        }
+      }
+      near(positions[0], first.x, 'births and unsafe segments appear immediately');
+      near(positions[4], first.x, 'the next safe snapshot starts at the already visible pose');
+      for (let index = 1; index < positions.length; index++) {
+        assert.ok(positions[index] >= positions[index - 1] - 1e-7, `display cannot rewind: ${positions.join(', ')}`);
+      }
+      assert.ok(positions[positions.length - 1] > first.x, 'movement resumes after the shared clock reaches the lifecycle floor');
+      game.applyView(makeView(.2, null), 4);
+      assert.equal(entity(), undefined, 'removed entities disappear immediately');
+    });
+  }
+}
+
+test('compact snapshots hydrate local player and cached metadata before reaching the app', async t => {
+  const snapshots = [], errors = [];
+  const client = createMultiplayerClient({ endpoint, WebSocketImpl: FakeSocket, onSnapshot: view => snapshots.push(view), onError: value => errors.push(value) });
+  t.after(() => client.close());
+  await client.create('greenhouse', 'easy'); const socket = FakeSocket.last; socket.emit('open'); socket.message(room);
+  const full = fixture();
+  const compact = { ...full, compact: true, playerId: 'p2', mapId: full.map.id, difficultyId: full.difficulty.id };
+  delete compact.player;
+  socket.message({ type: 'snapshot', tick: 1, view: compact });
+  const subsequent = { ...compact }; delete subsequent.map; delete subsequent.difficulty;
+  subsequent.players = compact.players.map(player => ({ ...player, x: player.x + 10 }));
+  socket.message({ type: 'snapshot', tick: 2, view: subsequent });
+  assert.equal(snapshots.length, 2); assert.deepEqual(errors, []);
+  assert.equal(snapshots[1].player.id, 'p2'); assert.equal(snapshots[1].player, snapshots[1].players[1]);
+  assert.equal(snapshots[1].map, snapshots[0].map); assert.equal(snapshots[1].difficulty, snapshots[0].difficulty);
+  socket.message({ type: 'snapshot', tick: 1, view: { ...compact, mapId: 'wrong' } });
+  socket.message({ type: 'snapshot', tick: 3, view: subsequent });
+  assert.equal(snapshots.length, 3, 'stale metadata cannot poison the cache');
+  socket.message({ type: 'snapshot', tick: 4, view: full });
+  assert.equal(snapshots[3].player.id, 'p1', 'old servers remain compatible');
+});
+
+for (const missing of ['map', 'difficulty', 'player']) test(`compact snapshots reject missing ${missing} rather than render an incomplete world`, async t => {
+  const snapshots = [], errors = [];
+  const client = createMultiplayerClient({ endpoint, WebSocketImpl: FakeSocket, onSnapshot: view => snapshots.push(view), onError: value => errors.push(value) });
+  t.after(() => client.close());
+  await client.join('123456'); const socket = FakeSocket.last; socket.emit('open'); socket.message(room);
+  const full = fixture();
+  const compact = { ...full, compact: true, playerId: 'p1', mapId: full.map.id, difficultyId: full.difficulty.id };
+  delete compact.player;
+  if (missing === 'player') compact.playerId = 'p9'; else delete compact[missing];
+  socket.message({ type: 'snapshot', tick: 1, view: compact });
+  assert.equal(snapshots.length, 0); assert.equal(errors.length, 1); assert.equal(socket.closed, true);
+});
+
+test('network metrics measure accepted snapshot bytes, intervals and paired heartbeat RTT, then clear on close', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let time = 0;
+  const client = createMultiplayerClient({ endpoint, WebSocketImpl: FakeSocket, now: () => time });
+  t.after(() => client.close());
+  await client.create('greenhouse', 'easy'); const socket = FakeSocket.last; socket.emit('open'); socket.message(room);
+  const first = { type: 'snapshot', tick: 1, view: fixture() };
+  time = 100; socket.message(first);
+  assert.deepEqual(client.getMetrics(), { rttMs: null, snapshotIntervalMs: null, snapshotBytes: Buffer.byteLength(JSON.stringify(first)), snapshotCount: 1 });
+  time = 151; socket.message({ ...first, tick: 2 });
+  assert.equal(client.getMetrics().snapshotIntervalMs, 51);
+  socket.message(first); assert.equal(client.getMetrics().snapshotCount, 2, 'stale snapshots do not update diagnostics');
+  const detached = client.getMetrics(); detached.snapshotCount = 999;
+  assert.equal(client.getMetrics().snapshotCount, 2, 'callers cannot mutate diagnostics');
+  socket.message({ type: 'pong' }); assert.equal(client.getMetrics().rttMs, null, 'unsolicited pong is not an RTT sample');
+  time = 15000; t.mock.timers.tick(15000); assert.equal(socket.sent.at(-1).type, 'ping');
+  time = 15227; socket.message({ type: 'pong' }); assert.equal(client.getMetrics().rttMs, 227);
+  time = 15300; socket.message({ type: 'pong' }); assert.equal(client.getMetrics().rttMs, 227, 'one ping has only one measurement');
+  client.close();
+  assert.deepEqual(client.getMetrics(), { rttMs: null, snapshotIntervalMs: null, snapshotBytes: null, snapshotCount: 0 });
 });
 
 function appHarness() {

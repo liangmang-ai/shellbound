@@ -20,6 +20,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   let backgrounded = false, backgroundPauseRequested = false;
   let coop = { view: 'select', code: '', room: null, message: '' };
   let best = { wave: 0, score: 0 };
+  const frameStats = { fps: null, frameMs: null, elapsed: 0, frames: 0 };
   let muted = false, aimAssist = true, selectedDifficulty = 'easy', facing = -Math.PI / 2, aimManual = false;
   try { best = { ...best, ...JSON.parse(storage?.getItem('shellbound.best.v1') || '{}') }; } catch { /* A save is optional. */ }
   try { const settings = JSON.parse(storage?.getItem('shellbound.settings.v1') || '{}'); muted = settings.muted === true; aimAssist = settings.aimAssist !== false; if (Object.prototype.hasOwnProperty.call(DIFFICULTIES, settings.difficultyId)) selectedDifficulty = settings.difficultyId; } catch { /* Defaults work without storage. */ }
@@ -44,13 +45,13 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (game?.online && isPortrait() && !paused) pause(false);
   }
   function logical(point) { return { x: (point.x - layout.ox) / layout.scale, y: (point.y - layout.oy) / layout.scale }; }
-  function arenaBounds() {
+  function arenaBounds(view = game?.getRenderView?.() || game) {
     const area = { x: 0, y: 0, w: layout.w, h: layout.h };
-    if (!game) return area;
-    const scale = Math.max(area.w / game.map.width, area.h / game.map.height, layout.compact ? 1.35 : 1.12);
+    if (!view) return area;
+    const scale = Math.max(area.w / view.map.width, area.h / view.map.height, layout.compact ? 1.35 : 1.12);
     const camera = {
-      x: clamp(game.player.x - area.w / scale / 2, 0, Math.max(0, game.map.width - area.w / scale)),
-      y: clamp(game.player.y - area.h / scale / 2, 0, Math.max(0, game.map.height - area.h / scale)),
+      x: clamp(view.player.x - area.w / scale / 2, 0, Math.max(0, view.map.width - area.w / scale)),
+      y: clamp(view.player.y - area.h / scale / 2, 0, Math.max(0, view.map.height - area.h / scale)),
     };
     return { ...area, scale, camera };
   }
@@ -436,9 +437,10 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     }
   }
   function drawGame() {
-    const arena = arenaBounds();
+    const view = game.getRenderView?.() || game;
+    const arena = arenaBounds(view);
     const aimingGrenade = grenadeAim();
-    drawArena(ctx, game, { time: clock * 1000, ...arena, grenadeAim: aimingGrenade });
+    drawArena(ctx, view, { time: clock * 1000, ...arena, grenadeAim: aimingGrenade });
     drawHUD();
     if (aimingGrenade) {
       rounded(layout.w / 2 - 175, layout.h - 107, 350, 32, 16, 'rgba(16,30,37,.88)');
@@ -635,7 +637,16 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     clearInput();
   }
   function frame(timestamp) {
-    const dt = lastTimestamp === null ? 0 : clamp((timestamp - lastTimestamp) / 1000, 0, .05); lastTimestamp = timestamp;
+    const elapsed = lastTimestamp === null ? 0 : Math.max(0, (timestamp - lastTimestamp) / 1000);
+    const dt = clamp(elapsed, 0, .05); lastTimestamp = timestamp;
+    if (elapsed > 0) {
+      frameStats.elapsed += elapsed; frameStats.frames++;
+      if (frameStats.elapsed >= 1) {
+        frameStats.fps = Math.round(frameStats.frames / frameStats.elapsed * 10) / 10;
+        frameStats.frameMs = Math.round(frameStats.elapsed / frameStats.frames * 10000) / 10;
+        frameStats.elapsed = 0; frameStats.frames = 0;
+      }
+    }
     clock += dt;
     if (game && !paused && !help && !isPortrait() && !(game.online && backgrounded)) {
       game.update(dt, collectInput()); saveResult();
@@ -652,7 +663,8 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     if (help) drawHelp();
   }
   function getSnapshot() {
-    return { grenadeAim: grenadeAim(), screen, paused, help, weaponPicker, selectedMap, selectedDifficulty, best, coop: { ...coop, room: coop.room ? { ...coop.room } : null }, settings: { muted, aimAssist, difficultyId: selectedDifficulty }, audio: audio?.getSnapshot() || null, aim: { facing, manual: aimManual, targetId: game?.aimTarget?.id ?? null }, layout: { ...layout }, controls: controlBounds(), pauseControl: pauseBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { online: game.online === true, players: (game.players || []).map(player => ({ id: player.id, x: player.x, y: player.y, hp: player.hp, currentWeapon: player.currentWeapon })), status: game.status, wave: game.wave, score: game.score, revivesRemaining: game.revivesRemaining, time: game.time, kills: game.kills, mapId: game.map.id, difficultyId: game.difficulty.id, environment: game.environmentSnapshot?.() || null, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, reviveProtectionRemaining: game.player.reviveProtectionRemaining, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, boostCharges: game.player.boostCharges, boostRemaining: game.player.boostRemaining, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
+    const rendered = game?.getRenderView?.();
+    return { performance: { fps: frameStats.fps, frameMs: frameStats.frameMs, network: network?.getMetrics?.() || null }, renderPlayer: rendered ? { id: rendered.player.id, x: rendered.player.x, y: rendered.player.y, angle: rendered.player.angle } : null, grenadeAim: grenadeAim(), screen, paused, help, weaponPicker, selectedMap, selectedDifficulty, best, coop: { ...coop, room: coop.room ? { ...coop.room } : null }, settings: { muted, aimAssist, difficultyId: selectedDifficulty }, audio: audio?.getSnapshot() || null, aim: { facing, manual: aimManual, targetId: game?.aimTarget?.id ?? null }, layout: { ...layout }, controls: controlBounds(), pauseControl: pauseBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { online: game.online === true, players: (game.players || []).map(player => ({ id: player.id, x: player.x, y: player.y, hp: player.hp, currentWeapon: player.currentWeapon })), status: game.status, wave: game.wave, score: game.score, revivesRemaining: game.revivesRemaining, time: game.time, kills: game.kills, mapId: game.map.id, difficultyId: game.difficulty.id, environment: game.environmentSnapshot?.() || null, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, reviveProtectionRemaining: game.player.reviveProtectionRemaining, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, boostCharges: game.player.boostCharges, boostRemaining: game.player.boostRemaining, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
   }
   resize({ width, height, pixelRatio });
   return { frame, resize, handleTouch, handleKey, handlePointer, pause, resume, getSnapshot };

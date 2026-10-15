@@ -246,6 +246,7 @@ test('explicit action queues can consume repeated boosts and sequential weapon a
     assert.equal(game.performAction(playerId, 'boost'), false);
     assert.equal(game.revive(playerId), false);
     assert.throws(() => game.snapshot(playerId), /Unknown player/);
+    assert.throws(() => game.networkSnapshot(playerId), /Unknown player/);
   }
 });
 
@@ -272,4 +273,47 @@ test('snapshots isolate local HUD and return detached JSON data without expandin
   view.players[0].hp = 25;
   assert.equal(game.players.p2.hp, 100);
   assert.equal(game.players.p1.hp, 0);
+});
+
+test('compact network views preserve both players and dynamic state without duplicate local data', () => {
+  const game = arena({ mapId: 'greenhouse', difficultyId: 'hard' });
+  enemy(game, { x: 1100, y: 600 });
+  game.update(.1, { p2: { shoot: true, aimX: 1100, aimY: 600 } });
+  game.players.p1.hp = 0;
+  game.players.p2.shield = 10;
+  game.players.p2.revivesRemaining = 1;
+  const encode = value => JSON.parse(JSON.stringify(value, (_key, item) => item instanceof Set ? [...item] : item));
+  const full = game.snapshot('p2');
+  const initial = encode(game.networkSnapshot('p2', { compact: true }));
+  const next = encode(game.networkSnapshot('p2', { compact: true, includeMetadata: false }));
+  assert.equal(initial.compact, true);
+  assert.equal(initial.playerId, 'p2');
+  assert.deepEqual(initial.map, full.map);
+  assert.deepEqual(initial.difficulty, full.difficulty);
+  assert.equal('map' in next, false);
+  assert.equal('difficulty' in next, false);
+  for (const key of ['player', 'environment', 'previousInput']) assert.equal(key in initial, false);
+  for (const key of Object.keys(full).filter(key => !['player', 'environment', 'previousInput', 'map', 'difficulty'].includes(key))) {
+    assert.deepEqual(next[key], full[key], `compact view preserves ${key}`);
+  }
+  assert.deepEqual(next.players.find(player => player.id === next.playerId), full.player);
+  assert.equal(next.players[0].hp, 0);
+  assert.equal(next.players[1].weapons.pistol.reserve, null);
+  assert.ok(next.bullets.every(bullet => Array.isArray(bullet.hitIds)));
+  assert.equal(game.networkSnapshot('p1', { compact: true }).status, 'dead');
+  assert.equal(next.status, 'playing');
+  next.players[1].weapons.pistol.clip = 0;
+  assert.equal(game.players.p2.weapons.pistol.clip, 11);
+});
+
+test('compact subsequent snapshots reduce bytes on both maps without expanding endless queues', () => {
+  for (const mapId of ['greenhouse', 'candyloop']) {
+    const game = new CoopGame({ seed: 21, mapId, difficultyId: 'hard' });
+    game.status = 'intermission'; game.wave = 1_000_000; game.startNextWave();
+    for (let index = 0; index < 36; index++) enemy(game, { x: 70 + index * 30, y: 700 });
+    const full = JSON.stringify(game.snapshot('p2'));
+    const compact = JSON.stringify(game.networkSnapshot('p2', { compact: true, includeMetadata: false }));
+    assert.equal('spawnQueue' in JSON.parse(compact), false);
+    assert.ok(Buffer.byteLength(compact) < Buffer.byteLength(full) * .9, `${mapId} snapshots should save at least 10%`);
+  }
 });

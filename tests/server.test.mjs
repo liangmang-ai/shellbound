@@ -64,12 +64,12 @@ async function setup(t, options = {}) {
   return { app, port, url, connect };
 }
 
-async function roomPair(t, options) {
+async function roomPair(t, options, clientOptions = {}) {
   const context = await setup(t, options);
   const host = await context.connect(), guest = await context.connect();
-  host.send({ type: 'create', mapId: 'greenhouse', difficultyId: 'easy' });
+  host.send({ type: 'create', mapId: 'greenhouse', difficultyId: 'easy', ...clientOptions.host });
   const created = await host.next('room');
-  guest.send({ type: 'join', code: created.code });
+  guest.send({ type: 'join', code: created.code, ...clientOptions.guest });
   await guest.next('room');
   await host.next(message => message.type === 'room' && message.players.length === 2);
   return { ...context, host, guest, code: created.code, room: context.app.rooms.get(created.code) };
@@ -222,6 +222,80 @@ test('solo host cannot start and a nonexistent room does not create server state
   host.send({ type: 'start' });
   assert.match((await host.next('error')).message, /两名/);
   assert.equal(app.rooms.get(created.code).game, null);
+});
+
+test('compact snapshots are negotiated independently while legacy clients retain full frames', async t => {
+  const { host, guest, room } = await roomPair(t, undefined, { host: { compactSnapshots: true }, guest: { compactSnapshots: 'true' } });
+  host.send({ type: 'start' });
+  const [first, legacy] = await Promise.all([host.next('snapshot'), guest.next('snapshot')]);
+  room.paused = true;
+  assert.equal(first.view.compact, true);
+  assert.equal(first.view.playerId, 'p1');
+  assert.equal(first.view.map.id, 'greenhouse');
+  assert.equal(first.view.difficulty.id, 'easy');
+  assert.equal('player' in first.view, false);
+  assert.equal('environment' in first.view, false);
+  assert.equal('compact' in legacy.view, false);
+  assert.equal(legacy.view.player.id, 'p2');
+  assert.equal(legacy.view.player.weapons.pistol.reserve, null);
+  assert.deepEqual(legacy.view.players, first.view.players);
+  assert.deepEqual(legacy.view.environment.barrels, legacy.view.barrels);
+  const [next, legacyNext] = await Promise.all([
+    host.next(message => message.type === 'snapshot' && message.tick > first.tick),
+    guest.next(message => message.type === 'snapshot' && message.tick > legacy.tick),
+  ]);
+  assert.equal('map' in next.view, false);
+  assert.equal('difficulty' in next.view, false);
+  assert.equal(next.view.mapId, 'greenhouse');
+  assert.equal(next.view.difficultyId, 'easy');
+  assert.equal(legacyNext.view.map.id, 'greenhouse');
+  assert.equal(legacyNext.view.difficulty.id, 'easy');
+  assert.equal(legacyNext.view.player.id, 'p2');
+  assert.ok(Buffer.byteLength(JSON.stringify(next.view)) < Buffer.byteLength(JSON.stringify(legacyNext.view)) * .7);
+});
+
+test('both compact clients retain independent death, revival, pause, events, and refreshed metadata', async t => {
+  const { host, guest, room } = await roomPair(t, undefined, { host: { compactSnapshots: true }, guest: { compactSnapshots: true } });
+  host.send({ type: 'start' });
+  const [first, second] = await Promise.all([host.next('snapshot'), guest.next('snapshot')]);
+  room.paused = true;
+  assert.equal(first.view.playerId, 'p1');
+  assert.equal(second.view.playerId, 'p2');
+  assert.equal(first.view.map.id, 'greenhouse');
+  assert.equal(second.view.map.id, 'greenhouse');
+  room.game.players.p1.shield = 7;
+  room.game.players.p2.hp = 0;
+  room.game.players.p2.revivesRemaining = 1;
+  const [alive, dead] = await Promise.all([
+    host.next(message => message.type === 'snapshot' && message.tick > first.tick && message.view.players[1].hp === 0),
+    guest.next(message => message.type === 'snapshot' && message.tick > second.tick && message.view.players[1].hp === 0),
+  ]);
+  assert.deepEqual(alive.view.players, dead.view.players);
+  assert.equal(alive.view.players[0].shield, 7);
+  assert.equal(alive.view.status, 'playing');
+  assert.equal(dead.view.status, 'dead');
+  assert.equal(dead.view.teamStatus, 'playing');
+  assert.equal(dead.view.revivesRemaining, 1);
+  assert.equal(room.game.revive('p2'), true);
+  room.events.push(...room.game.events); room.game.events = [];
+  room.pauseOwners.add('p2'); room.pauseOwnerId = 'p2';
+  // A changed metadata object is resent, even when its identifier stays the same.
+  room.game.map = { ...room.game.map, name: 'Updated map' };
+  const [revivedHost, revivedGuest] = await Promise.all([
+    host.next(message => message.type === 'snapshot' && message.tick > alive.tick && message.view.players[1].hp > 0),
+    guest.next(message => message.type === 'snapshot' && message.tick > dead.tick && message.view.players[1].hp > 0),
+  ]);
+  for (const frame of [revivedHost, revivedGuest]) {
+    assert.equal(frame.paused, true);
+    assert.deepEqual(frame.pauseOwnerIds, ['p2']);
+    assert.equal(frame.pauseOwnerId, 'p2');
+    assert.equal(frame.view.map.name, 'Updated map');
+    assert.equal(frame.view.difficulty.id, 'easy');
+    assert.equal(frame.view.status, 'playing');
+    assert.deepEqual(frame.view.events.filter(event => event.type === 'revive').map(event => event.playerId), ['p2']);
+  }
+  assert.equal(revivedHost.view.revivesRemaining, 3);
+  assert.equal(revivedGuest.view.revivesRemaining, 0);
 });
 
 test('input sequence validation applies independent motion and stale packets cannot reverse newer inputs', async t => {

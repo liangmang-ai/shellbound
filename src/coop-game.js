@@ -149,24 +149,34 @@ export class CoopGame extends Game {
     return revived;
   }
 
-  snapshot(playerId = 'p1') {
+  // This projection borrows live world objects for immediate synchronous encoding.
+  // Call snapshot() when a detached, JSON-safe copy is required instead.
+  networkSnapshot(playerId = 'p1', { compact = false, includeMetadata = true } = {}) {
     const player = this.playerFor(playerId);
     if (!player) throw new Error('Unknown player');
-    const snapshot = {
-      mapId: this.map.id, difficultyId: this.difficulty.id, map: this.map, difficulty: this.difficulty,
-      player, players: this.getPlayers(), barrels: this.barrels,
+    const view = {
+      mapId: this.map.id, difficultyId: this.difficulty.id,
+      players: this.getPlayers(), barrels: this.barrels,
       enemies: this.enemies, bullets: this.bullets, grenades: this.grenades,
       pickups: this.pickups, effects: this.effects, events: this.events,
       wave: this.wave, waveKills: this.waveKills, waveTotal: this.waveTotal,
       score: this.score, kills: this.kills, time: this.time,
       revivesRemaining: player.revivesRemaining,
-      previousInput: {},
       status: player.hp <= 0 ? 'dead' : this.status, teamStatus: this.status,
+    };
+    if (!compact || includeMetadata) { view.map = this.map; view.difficulty = this.difficulty; }
+    if (compact) { view.compact = true; view.playerId = playerId; }
+    else Object.assign(view, {
+      player, previousInput: {},
       environment: { barrels: this.barrels, speedZones: this.map.speedZones || [],
         speedMultiplier: player.speedMultiplier, speedZoneId: player.speedZoneId },
-    };
+    });
+    return view;
+  }
+
+  snapshot(playerId = 'p1') {
     // No simulation functions, RNG state, navigation fields, Sets or unbounded
     // spawn queue are exposed. Infinity ammunition intentionally serializes null.
-    return JSON.parse(JSON.stringify(snapshot, (key, value) => value instanceof Set ? [...value] : value));
+    return JSON.parse(JSON.stringify(this.networkSnapshot(playerId), (key, value) => value instanceof Set ? [...value] : value));
   }
 }
