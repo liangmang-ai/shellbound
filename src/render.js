@@ -519,20 +519,33 @@ export function drawArena(ctx, game, bounds = {}) {
   for (const enemy of game.enemies || []) rangedWarning(ctx, enemy, map, t);
   for (const [i, o] of (map.obstacles || []).entries()) obstacle(ctx, o, palette, i, factory, candy);
   const player = game.player;
-  if (player) speedIndicator(ctx, player, t);
-  if (player) boostIndicator(ctx, player, t);
-  if (player) reviveProtection(ctx, player, map, t);
+  const players = game.online && Array.isArray(game.players) ? game.players.map(p => p.id === player?.id ? player : p) : player ? [player] : [];
+  for (const p of players) {
+    speedIndicator(ctx, p, t); boostIndicator(ctx, p, t); reviveProtection(ctx, p, map, t);
+  }
   grenadePreview(ctx, player, grenadeAim, t);
   const activeBarrels = (game.barrels || []).filter(b => b.active !== false);
   const actors = [...(game.enemies || []), ...activeBarrels];
-  if (player) actors.push(player);
+  actors.push(...players);
   actors.sort((a, b) => num(a.y) - num(b.y));
   for (const actor of actors) {
     if (activeBarrels.includes(actor)) { barrel(ctx, actor); continue; }
-    const enemy = actor !== player;
+    const enemy = !players.includes(actor);
+    ctx.save();
+    if (!enemy && actor.hp <= 0) ctx.globalAlpha = .4;
     drawEgg(ctx, num(actor.x), num(actor.y), { angle: enemy && actor.rangedCharge > 0 ? num(actor.attackAngle, num(actor.angle)) : num(actor.angle), scale: num(actor.radius, enemy ? 19 : 20) / 20,
+      color: !enemy && actor.id === 'p2' ? '#b6dcff' : '#fff0cc',
       shield: enemy ? 0 : num(actor.shield), enemyType: enemy ? (actor.type || 'grunt') : null,
       hurt: enemy ? num(actor.hitFlash) : num(actor.reviveProtectionRemaining) > 0 ? 0 : num(actor.invulnerability), weapon: actor.currentWeapon || 'pistol', time });
+    ctx.restore();
+    if (!enemy && game.online) {
+      const label = actor.id === 'p2' ? '2P' : '1P';
+      ctx.font = 'bold 16px sans-serif';
+      const width = ctx.measureText(label).width + 20;
+      ctx.fillStyle = '#18353de6'; roundRect(ctx, num(actor.x) - width / 2, num(actor.y) + 34, width, 25, 9); ctx.fill();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = actor.id === 'p2' ? '#cce8ff' : '#fff1c9';
+      ctx.fillText(label, num(actor.x), num(actor.y) + 47);
+    }
     if (enemy && (actor.type === 'tank' || actor.hp < actor.maxHp)) {
       const ratio = Math.max(0, Math.min(1, num(actor.hp) / Math.max(1, num(actor.maxHp, 1)))), radius = num(actor.radius, 19);
       const boss = actor.type === 'tank', width = boss ? 58 : 30, height = boss ? 6 : 4, top = num(actor.y) - radius - (boss ? 20 : 16);

@@ -28,7 +28,7 @@ const storage = {
   },
 };
 const audio = createAudio({ platform: 'wechat', wxApi: wx });
-const app = createApp({ canvas, ...getSize(), storage, platform: 'wechat', audio });
+const app = createApp({ canvas, ...getSize(), storage, platform: 'wechat', audio, wxApi: wx });
 const convertTouches = (event) => (event.changedTouches || event.touches || []).map((touch) => ({
   id: touch.identifier,
   x: touch.clientX ?? touch.pageX,
@@ -71,7 +71,7 @@ wx.onHide(() => {
   if (frameId !== null) cancelFrame(frameId);
   frameId = null;
 });
-if (typeof wx.onAudioInterruptionBegin === 'function') wx.onAudioInterruptionBegin(() => app.pause());
+if (typeof wx.onAudioInterruptionBegin === 'function') wx.onAudioInterruptionBegin(() => app.pause(false));
 wx.onShow(() => {
   active = true;
   app.resize(getSize());

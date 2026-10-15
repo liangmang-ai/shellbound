@@ -271,6 +271,19 @@ export class Game {
     return { clip: def.clipSize, reserve: def.reserveMax, reloadRemaining: 0, cooldown: 0 };
   }
 
+  getPlayers() { return [this.player]; }
+
+  livingPlayers() { return this.getPlayers().filter(player => player.hp > 0); }
+
+  nearestPlayer(body) {
+    let closest = null, distance = Infinity;
+    for (const player of this.livingPlayers()) {
+      const squared = distanceSquared(body, player);
+      if (squared < distance) { closest = player; distance = squared; }
+    }
+    return closest;
+  }
+
   startNextWave() {
     if (this.status !== 'intermission') return false;
     this.wave += 1;
@@ -285,7 +298,7 @@ export class Game {
   }
 
   equipWeapon(id) {
-    if (!this.player.weapons[id]) return false;
+    if (!WEAPON_ORDER.includes(id) || !Object.prototype.hasOwnProperty.call(this.player.weapons, id)) return false;
     this.player.currentWeapon = id;
     this.events.push({ type: 'equip', weaponId: id });
     return true;
@@ -353,7 +366,8 @@ export class Game {
     this.grenades.push({ id: this.nextId++, x: p.x, y: p.y, radius: rules.radius,
       angle, vx: Math.cos(angle) * rules.speed, vy: Math.sin(angle) * rules.speed,
       targetX: point.x, targetY: point.y,
-      fuse: rules.fuse, maxFuse: rules.fuse, travelRemaining: distance / rules.speed });
+      fuse: rules.fuse, maxFuse: rules.fuse, travelRemaining: distance / rules.speed,
+      ...(p.id ? { playerId: p.id } : {}) });
     this.events.push({ type: 'grenade' });
     return true;
   }
@@ -395,8 +409,29 @@ export class Game {
     this.events = [];
     if (dt <= 0 || this.status === 'dead' || this.status === 'won') return;
     this.time += dt;
-    const p = this.player;
     this.updateMap(dt);
+    this.updatePlayer(dt, input);
+    if (this.status === 'playing') {
+      this.updateSpawns(dt);
+      // Resolve player attacks before a defeated boss can finish its wind-up.
+      this.updateBullets(dt);
+      this.updateGrenades(dt);
+      this.updateEnemies(dt);
+    }
+    this.updatePickups(dt);
+    for (const effect of this.effects) effect.life -= dt;
+    this.effects = this.effects.filter(effect => effect.life > 0);
+    if (this.player.hp <= 0) {
+      this.player.hp = 0;
+      this.status = 'dead';
+      this.events.push({ type: 'dead' });
+    } else if (this.status === 'playing' && this.spawnQueue.length === 0 && this.enemies.length === 0) {
+      this.clearWave();
+    }
+  }
+
+  updatePlayer(dt, input = {}) {
+    const p = this.player;
     p.invulnerability = Math.max(0, p.invulnerability - dt);
     p.reviveProtectionRemaining = Math.max(0, p.reviveProtectionRemaining - dt);
     if (this.status === 'playing') {
@@ -436,24 +471,7 @@ export class Game {
     if (pressed('boost')) this.activateBoost();
     if (pressed('grenade')) this.throwGrenade(input.grenadeTarget);
     this.previousInput = { grenade: Boolean(input.grenade), reload: Boolean(input.reload), boost: Boolean(input.boost), weaponNext: Boolean(input.weaponNext) };
-    if (this.status === 'playing') {
-      if (input.shoot) this.fire();
-      this.updateSpawns(dt);
-      // Resolve player attacks before a defeated boss can finish its wind-up.
-      this.updateBullets(dt);
-      this.updateGrenades(dt);
-      this.updateEnemies(dt);
-    }
-    this.updatePickups(dt);
-    for (const effect of this.effects) effect.life -= dt;
-    this.effects = this.effects.filter(effect => effect.life > 0);
-    if (p.hp <= 0) {
-      p.hp = 0;
-      this.status = 'dead';
-      this.events.push({ type: 'dead' });
-    } else if (this.status === 'playing' && this.spawnQueue.length === 0 && this.enemies.length === 0) {
-      this.clearWave();
-    }
+    if (this.status === 'playing' && input.shoot) this.fire();
   }
 
   fire() {
@@ -484,6 +502,7 @@ export class Game {
           vx: Math.cos(angle) * bulletSpeed, vy: Math.sin(angle) * bulletSpeed,
           damage: def.damage, remainingHits: def.piercing, hitIds: new Set(),
           owner: 'player', weapon: id, distanceTravelled: 0, maxRange: def.range,
+          ...(p.id ? { playerId: p.id } : {}),
           life: def.range ? def.range / bulletSpeed
             : (id === 'sniper' ? 1.1 : .95) / (boosted ? BOOST_RULES.bulletSpeedMultiplier : 1) });
         if (pellet === 0) {
@@ -499,7 +518,8 @@ export class Game {
     this.spawnTimer -= dt;
     if (this.spawnQueue.length === 0 || this.spawnTimer > 0 || this.enemies.length >= 36) return;
     const type = this.spawnQueue[0], def = ENEMY_TYPES[type], difficulty = this.difficulty;
-    const available = this.map.spawnPoints.filter(point => distanceSquared(point, this.player) > 220 ** 2);
+    const available = this.map.spawnPoints.filter(point => this.livingPlayers()
+      .every(player => distanceSquared(point, player) > 220 ** 2));
     const points = available.length ? available : this.map.spawnPoints;
     const first = Math.floor(this.random() * points.length);
     let point = null;
@@ -539,7 +559,7 @@ export class Game {
 
   bodyPeers(body) {
     const peers = this.enemies.filter(enemy => enemy !== body && enemy.hp > 0);
-    if (body !== this.player && this.player.hp > 0) peers.push(this.player);
+    peers.push(...this.livingPlayers().filter(player => player !== body));
     return peers;
   }
 
@@ -548,13 +568,13 @@ export class Game {
       .every(other => (x - other.x) ** 2 + (y - other.y) ** 2 >= (radius + other.radius + BODY_GAP) ** 2);
   }
 
-  findFreeEntityPoint(x, y, radius) {
-    if (this.isEntityFree(x, y, radius)) return { x, y };
+  findFreeEntityPoint(x, y, radius, body = null) {
+    if (this.isEntityFree(x, y, radius, body)) return { x, y };
     // Search close to this entrance so a packed spawn does not teleport to the player.
     for (let ring = 36; ring <= 144; ring += 36) for (let index = 0; index < 16; index++) {
       const angle = index / 16 * TAU;
       const px = x + Math.cos(angle) * ring, py = y + Math.sin(angle) * ring;
-      if (this.isEntityFree(px, py, radius)) return { x: px, y: py };
+      if (this.isEntityFree(px, py, radius, body)) return { x: px, y: py };
     }
     return null;
   }
@@ -645,7 +665,7 @@ export class Game {
     return !this.map.obstacles.some(rect => segmentRoundedRect(ax, ay, bx, by, rect, radius) !== null);
   }
 
-  buildFlowField(radius) {
+  buildFlowField(radius, player = this.player) {
     const cell = 40, cols = Math.ceil(this.map.width / cell), rows = Math.ceil(this.map.height / cell);
     const valid = new Uint8Array(cols * rows), distances = new Int16Array(cols * rows).fill(-1);
     for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
@@ -656,7 +676,7 @@ export class Game {
     let goal = -1, best = Infinity;
     for (let i = 0; i < valid.length; i++) if (valid[i]) {
       const px = i % cols * cell + cell / 2, py = Math.floor(i / cols) * cell + cell / 2;
-      const d = (px - this.player.x) ** 2 + (py - this.player.y) ** 2;
+      const d = (px - player.x) ** 2 + (py - player.y) ** 2;
       if (d < best) { best = d; goal = i; }
     }
     const queue = goal >= 0 ? [goal] : [];
@@ -674,11 +694,12 @@ export class Game {
     return { cell, cols, rows, valid, distances };
   }
 
-  navigationTarget(enemy) {
+  navigationTarget(enemy, player = this.player) {
     const radius = enemy.radius - 0.01;
-    if (this.clearPath(enemy.x, enemy.y, this.player.x, this.player.y, radius)) return this.player;
-    let field = this.flowFields.get(enemy.radius);
-    if (!field) { field = this.buildFlowField(enemy.radius); this.flowFields.set(enemy.radius, field); }
+    if (this.clearPath(enemy.x, enemy.y, player.x, player.y, radius)) return player;
+    const fieldKey = player.id ? `${player.id}:${enemy.radius}` : enemy.radius;
+    let field = this.flowFields.get(fieldKey);
+    if (!field) { field = this.buildFlowField(enemy.radius, player); this.flowFields.set(fieldKey, field); }
     const cx = clamp(Math.floor(enemy.x / field.cell), 0, field.cols - 1);
     const cy = clamp(Math.floor(enemy.y / field.cell), 0, field.rows - 1);
     let best = null, bestCost = Infinity;
@@ -694,33 +715,36 @@ export class Game {
       const cost = field.distances[index] * field.cell + Math.hypot(target.x - enemy.x, target.y - enemy.y) * 0.72;
       if (cost < bestCost) { best = target; bestCost = cost; }
     }
-    return best || this.player;
+    return best || player;
   }
 
   updateEnemies(dt) {
-    const touching = enemy => enemy.hp > 0
-      && distanceSquared(enemy, this.player) <= (enemy.radius + this.player.radius + TOUCH_MARGIN) ** 2;
+    const players = this.livingPlayers();
+    const touching = (enemy, player) => enemy.hp > 0
+      && distanceSquared(enemy, player) <= (enemy.radius + player.radius + TOUCH_MARGIN) ** 2;
     // Remember existing contact before repairing legacy/manual overlaps.
-    const priorContact = this.enemies.find(touching);
+    const priorContacts = new Map(players.map(player => [player, this.enemies.find(enemy => touching(enemy, player))]));
     this.navigationTimer -= dt;
     if (this.navigationTimer <= 0) { this.flowFields.clear(); this.navigationTimer = 0.4; }
     for (const enemy of this.enemies) {
       if (enemy.hp <= 0) continue;
       enemy.hitFlash = Math.max(0, enemy.hitFlash - dt);
-      const charging = this.updateRangedAttack(enemy, dt);
-      enemy.angle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
+      const player = this.nearestPlayer(enemy);
+      if (!player) continue;
+      const charging = this.updateRangedAttack(enemy, dt, player);
+      enemy.angle = Math.atan2(player.y - enemy.y, player.x - enemy.x);
       if (charging) continue;
-      const target = this.navigationTarget(enemy);
+      const target = this.navigationTarget(enemy, player);
       let dx = target.x - enemy.x, dy = target.y - enemy.y;
       const length = Math.hypot(dx, dy);
       if (length > 1) { dx /= length; dy /= length; } else { dx = 0; dy = 0; }
       this.moveBody(enemy, dx * enemy.speed * dt, dy * enemy.speed * dt);
     }
     this.separateEnemyBodies();
-    if (this.player.invulnerability <= 0) {
+    for (const player of players) if (player.hp > 0 && player.invulnerability <= 0) {
       // At most one touch hit per grace interval, independent of crowd size.
-      const contact = priorContact || this.enemies.find(touching);
-      if (contact) this.damagePlayer(contact.damage);
+      const contact = priorContacts.get(player) || this.enemies.find(enemy => touching(enemy, player));
+      if (contact) this.damagePlayer(contact.damage, player);
     }
   }
 
@@ -748,14 +772,16 @@ export class Game {
       correct(a, dx * correction * (share ? .5 : 1), dy * correction * (share ? .5 : 1));
       if (share) correct(b, -dx * correction * .5, -dy * correction * .5);
     };
-    for (const enemy of this.enemies) if (enemy.hp > 0) separate(enemy, this.player, false);
+    for (const enemy of this.enemies) if (enemy.hp > 0) {
+      for (const player of this.livingPlayers()) separate(enemy, player, false);
+    }
     for (let i = 0; i < this.enemies.length; i++) for (let j = i + 1; j < this.enemies.length; j++) {
       const a = this.enemies[i], b = this.enemies[j];
       if (a.hp > 0 && b.hp > 0) separate(a, b, true);
     }
   }
 
-  updateRangedAttack(enemy, dt) {
+  updateRangedAttack(enemy, dt, player = this.player) {
     if (enemy.type !== 'tank' || enemy.hp <= 0) return false;
     const difficulty = this.difficulty;
     if (enemy.rangedCharge > 0) {
@@ -769,7 +795,7 @@ export class Game {
     }
     enemy.rangedCooldown = finite(enemy.rangedCooldown, difficulty.bossInterval - difficulty.bossWindup) - dt;
     if (enemy.rangedCooldown <= 0) {
-      enemy.attackAngle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
+      enemy.attackAngle = Math.atan2(player.y - enemy.y, player.x - enemy.x);
       enemy.rangedWindup = difficulty.bossWindup;
       enemy.rangedCharge = difficulty.bossWindup + enemy.rangedCooldown;
       enemy.rangedCooldown = 0;
@@ -792,14 +818,14 @@ export class Game {
     this.events.push({ type: 'bossVolley', enemyId: enemy.id });
   }
 
-  damagePlayer(amount) {
+  damagePlayer(amount, player = this.player) {
     amount = Math.max(0, finite(amount));
-    const absorbed = Math.min(this.player.shield, amount);
-    this.player.shield -= absorbed;
-    this.player.hp = Math.max(0, this.player.hp - (amount - absorbed));
-    this.player.invulnerability = 0.65;
-    this.addEffect('damage', this.player.x, this.player.y, 34, 0.25, '#ff6b81');
-    this.events.push({ type: 'damage', amount, absorbed });
+    const absorbed = Math.min(player.shield, amount);
+    player.shield -= absorbed;
+    player.hp = Math.max(0, player.hp - (amount - absorbed));
+    player.invulnerability = 0.65;
+    this.addEffect('damage', player.x, player.y, 34, 0.25, '#ff6b81');
+    this.events.push({ type: 'damage', amount, absorbed, ...(player.id ? { playerId: player.id } : {}) });
   }
 
   updateBullets(dt) {
@@ -818,11 +844,14 @@ export class Game {
         if (t !== null) wallT = Math.min(wallT, t);
       }
       if (bullet.owner === 'enemy') {
-        const p = this.player;
-        const playerT = segmentCircle(bullet.x, bullet.y, nx, ny, p.x, p.y, p.radius + bullet.radius);
+        let playerT = null, hitPlayer = null;
+        for (const player of this.livingPlayers()) {
+          const t = segmentCircle(bullet.x, bullet.y, nx, ny, player.x, player.y, player.radius + bullet.radius);
+          if (t !== null && (playerT === null || t < playerT)) { playerT = t; hitPlayer = player; }
+        }
         let endT = wallT;
         if (playerT !== null && playerT < wallT) {
-          if (p.hp > 0 && p.invulnerability <= 0) this.damagePlayer(bullet.damage);
+          if (hitPlayer.invulnerability <= 0) this.damagePlayer(bullet.damage, hitPlayer);
           endT = playerT;
           bullet.life = 0;
         }
@@ -902,7 +931,7 @@ export class Game {
 
   explodeBarrel(first) {
     const queue = [first];
-    let playerDamage = 0;
+    const playerDamage = new Map(this.livingPlayers().map(player => [player, 0]));
     for (let index = 0; index < queue.length; index++) {
       const barrel = queue[index];
       if (!barrel.active) continue;
@@ -912,10 +941,12 @@ export class Game {
       barrel.respawnRemaining = BARREL_RULES.respawnSeconds;
       this.addEffect('barrelExplosion', barrel.x, barrel.y, BARREL_RULES.blastRadius, 0.55, '#ffae66');
       this.damageBlast(barrel.x, barrel.y, BARREL_RULES.blastRadius, BARREL_RULES.damage);
-      const distance = Math.hypot(this.player.x - barrel.x, this.player.y - barrel.y);
-      if (distance <= BARREL_RULES.blastRadius + this.player.radius) {
-        playerDamage = Math.max(playerDamage, BARREL_RULES.playerDamage
-          * Math.max(.4, 1 - distance / (BARREL_RULES.blastRadius * 1.6)));
+      for (const player of playerDamage.keys()) {
+        const distance = Math.hypot(player.x - barrel.x, player.y - barrel.y);
+        if (distance <= BARREL_RULES.blastRadius + player.radius) {
+          playerDamage.set(player, Math.max(playerDamage.get(player), BARREL_RULES.playerDamage
+            * Math.max(.4, 1 - distance / (BARREL_RULES.blastRadius * 1.6))));
+        }
       }
       this.events.push({ type: 'barrelExplosion', barrelId: barrel.id, x: barrel.x, y: barrel.y });
       for (const other of this.barrels) {
@@ -923,7 +954,9 @@ export class Game {
       }
     }
     // One chain is one player hit, even when several station blasts overlap.
-    if (playerDamage > 0 && this.player.hp > 0 && this.player.invulnerability <= 0) this.damagePlayer(playerDamage);
+    for (const [player, damage] of playerDamage) {
+      if (damage > 0 && player.hp > 0 && player.invulnerability <= 0) this.damagePlayer(damage, player);
+    }
   }
 
   updateGrenades(dt) {
@@ -1043,5 +1076,6 @@ export class Game {
       this.events.push({ type: 'unlock', weaponId: unlock });
     }
     this.startNextWave();
+    return true;
   }
 }

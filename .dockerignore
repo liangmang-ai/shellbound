@@ -1,0 +1,14 @@
+# Keep user imports, local credentials, and the nested WeChat repository out of
+# the Docker build context. The server image uses this explicit allowlist.
+**
+!package.json
+!server/
+server/**
+!server/Dockerfile
+!server/server.mjs
+!server/package.json
+!server/package-lock.json
+!src/
+src/**
+!src/game.js
+!src/coop-game.js

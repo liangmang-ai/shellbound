@@ -1,6 +1,7 @@
 import { Game, MAPS, WEAPONS, WEAPON_ORDER, GRENADE_RULES, DIFFICULTIES, BOOST_RULES } from './game.js';
 import { drawArena, drawEgg } from './render.js';
 import { findAimTarget } from './aim.js';
+import { createMultiplayerClient, NetworkGame } from './multiplayer.js';
 
 const C = { bg: '#101e25', panel: '#1b2c33', line: '#40585d', ink: '#fff8e7', muted: '#b5ccce', lime: '#d1f58a', teal: '#a4eed2', coral: '#ffb196' };
 const FONT = '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
@@ -9,12 +10,15 @@ const mapLabels = { greenhouse: ['汽泡工坊', '爆破油桶 · 加速穿行']
 const difficultyHints = { easy: '怪物更少更慢，适合轻松突围', normal: '熟悉走位，迎接无尽攻势', hard: '更多怪物，更紧凑的攻势' };
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 
-export function createApp({ canvas, width, height, pixelRatio = 1, storage, platform = 'web', audio }) {
+export function createApp({ canvas, width, height, pixelRatio = 1, storage, platform = 'web', audio, multiplayerFactory = createMultiplayerClient, wxApi }) {
   const ctx = canvas.getContext('2d');
   let size = { width, height, pixelRatio }, layout, game = null, screen = 'menu', selectedMap = MAPS[0].id;
   let paused = false, help = false, weaponPicker = false, lastTimestamp = null, clock = 0, pointer = null, shooting = false;
   let buttons = [], touches = new Map(), keys = new Set(), actions = {}, toast = '', toastUntil = 0, resultSaved = false;
   let grenadePointer = null;
+  let network = null, connectionId = 0;
+  let backgrounded = false, backgroundPauseRequested = false;
+  let coop = { view: 'select', code: '', room: null, message: '' };
   let best = { wave: 0, score: 0 };
   let muted = false, aimAssist = true, selectedDifficulty = 'easy', facing = -Math.PI / 2, aimManual = false;
   try { best = { ...best, ...JSON.parse(storage?.getItem('shellbound.best.v1') || '{}') }; } catch { /* A save is optional. */ }
@@ -37,6 +41,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     layout = { w, h, compact, scale, ox: (size.width - w * scale) / 2, oy: (size.height - h * scale) / 2 };
     buttons = [];
     clearInput();
+    if (game?.online && isPortrait() && !paused) pause(false);
   }
   function logical(point) { return { x: (point.x - layout.ox) / layout.scale, y: (point.y - layout.oy) / layout.scale }; }
   function arenaBounds() {
@@ -65,16 +70,17 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   // Use a physical-pixel threshold so a small thumb wobble does not switch
   // from assisted fire to manual aim on a small landscape screen.
   function fireDragThreshold() { return Math.max(12, 14 / layout.scale); }
-  function clearInput() { keys.clear(); touches.clear(); pointer = null; grenadePointer = null; shooting = false; actions = {}; weaponPicker = false; aimManual = false; if (game) game.aimTarget = null; }
+  function clearInput() { keys.clear(); touches.clear(); pointer = null; grenadePointer = null; shooting = false; actions = {}; weaponPicker = false; aimManual = false; if (game) game.aimTarget = null; if (game?.online) network?.input({ moveX: 0, moveY: 0, shoot: false }); }
   function cycleWeapon() {
     const owned = weaponIds.filter(id => game.player.weapons[id]);
     if (owned.length < 2) { toast = '清关或捡武器箱解锁新枪'; toastUntil = clock + 2; return; }
-    const current = actions.weaponSlot || game.player.currentWeapon;
+    const current = actions.weaponSlot || game.pendingWeaponId || game.player.currentWeapon;
     actions.weaponSlot = owned[(owned.indexOf(current) + 1) % owned.length];
     weaponPicker = false;
   }
   function revive() {
     if (!game.revive()) return;
+    if (game.online) { clearInput(); return; }
     resultSaved = false; paused = false; help = false; clearInput(); lastTimestamp = null;
     facing = game.player.angle;
     audio?.unlock(); audio?.playEvents([{ type: 'revive' }]);
@@ -82,7 +88,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   }
   function activateBoost() {
     if (paused || help || !game || game.status !== 'playing') return;
-    if (game.activateBoost()) audio?.playEvents([{ type: 'boostActivation' }]);
+    if (game.activateBoost()) { if (!game.online) audio?.playEvents([{ type: 'boostActivation' }]); }
     else { toast = '击败怪物，拾取闪电补充爆发'; toastUntil = clock + 2; }
   }
   function grenadeDrag(touch, point) {
@@ -108,15 +114,97 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     actions.grenadeTarget = touch.dragged ? world(point) : undefined;
   }
   function start() {
+    disconnect();
     game = new Game({ mapId: selectedMap, difficultyId: selectedDifficulty, seed: Date.now() >>> 0 });
     facing = game.player.angle; audio?.pause(); audio?.unlock(); audio?.playEvents(game.events);
     screen = 'game'; paused = false; help = false; resultSaved = false; lastTimestamp = null;
     resize(size); toast = selectedMap === 'greenhouse' ? '打爆油桶清怪 · 踩箭头加速带' : '绕中心岛突围 · 走加速通道'; toastUntil = clock + 3;
   }
-  function menu() { audio?.pause(); screen = 'menu'; game = null; paused = false; help = false; resize(size); }
-  function pause() { audio?.pause(); if (game && !['won', 'dead'].includes(game.status)) paused = true; clearInput(); lastTimestamp = null; }
-  function resume() { clearInput(); lastTimestamp = null; }
-  function togglePause() { if (game && !['won', 'dead'].includes(game.status)) { paused = !paused; if (paused) audio?.pause(); help = false; clearInput(); lastTimestamp = null; } }
+  function disconnect() { connectionId += 1; backgroundPauseRequested = false; const client = network; network = null; client?.close(); }
+  function menu() { disconnect(); audio?.pause(); screen = 'menu'; game = null; paused = false; help = false; resize(size); }
+  function ensureBackgroundPause() {
+    if (!backgrounded || !network) return;
+    // A room can begin while this app is hidden and before its first combat
+    // snapshot. Dead games also need protection against a teammate's revive.
+    if (!game?.online && (!coop.room || coop.room.phase === 'waiting')) return;
+    if (localOwnsPause()) { backgroundPauseRequested = true; return; }
+    if (backgroundPauseRequested) return;
+    backgroundPauseRequested = true;
+    network.pause(true);
+  }
+  function pause(fromBackground = true) {
+    if (fromBackground) backgrounded = true;
+    audio?.pause();
+    if (game?.online) { paused = true; if (fromBackground) ensureBackgroundPause(); else network?.pause(true); }
+    else if (game && !['won', 'dead'].includes(game.status)) paused = true;
+    if (fromBackground) ensureBackgroundPause();
+    clearInput(); lastTimestamp = null;
+  }
+  function resume() { backgrounded = false; clearInput(); lastTimestamp = null; }
+  function localOwnsPause() {
+    const room = coop.room;
+    const owners = room?.pauseOwnerIds || (room?.pauseOwnerId ? [room.pauseOwnerId] : []);
+    return owners.includes(room?.playerId);
+  }
+  function continueGame() {
+    if (game?.online) {
+      if (backgrounded || !localOwnsPause()) return;
+      backgroundPauseRequested = false;
+      network?.pause(false);
+    } else paused = false;
+    clearInput(); lastTimestamp = null;
+  }
+  function togglePause() { if (game?.online) { if (paused) continueGame(); else pause(false); help = false; return; } if (game && !['won', 'dead'].includes(game.status)) { paused = !paused; if (paused) audio?.pause(); help = false; clearInput(); lastTimestamp = null; } }
+
+  function openCoop() {
+    disconnect(); game = null; screen = 'coop'; paused = false; help = false;
+    coop = { view: 'select', code: '', room: null, message: '' }; resize(size);
+  }
+  function connectCoop(join = false) {
+    if (coop.view === 'connecting' || join && !/^\d{6}$/.test(coop.code)) return;
+    disconnect(); const id = connectionId;
+    coop.view = 'connecting'; coop.message = '';
+    const current = () => id === connectionId;
+    network = multiplayerFactory({ platform, wxApi,
+      onRoom(room) {
+        if (!current()) return;
+        coop.room = room; coop.view = 'room'; coop.message = '';
+        if (game?.online) {
+          const wasPaused = paused; paused = room.paused === true || room.phase === 'paused' || backgrounded || backgroundPauseRequested;
+          if (paused && !wasPaused) { audio?.pause(); clearInput(); }
+          if (wasPaused !== paused) lastTimestamp = null;
+        }
+        ensureBackgroundPause();
+      },
+      onSnapshot(view, tick) {
+        if (!current() || !view?.player || !view?.map) return;
+        if (!game?.online) {
+          game = new NetworkGame(network, view, tick); screen = 'game';
+          facing = game.player.angle; resultSaved = false; lastTimestamp = null; audio?.unlock(); resize(size);
+        } else if (!game.applyView(view, tick)) return;
+        const wasPaused = paused;
+        paused = view.paused === true || backgrounded || backgroundPauseRequested;
+        if (coop.room) Object.assign(coop.room, { paused: view.paused === true, pauseOwnerId: view.pauseOwnerId ?? null,
+          pauseOwnerIds: view.pauseOwnerIds || (view.pauseOwnerId ? [view.pauseOwnerId] : []) });
+        if (paused && !wasPaused) { audio?.pause(); clearInput(); }
+        if (paused !== wasPaused) lastTimestamp = null;
+        ensureBackgroundPause();
+        if (isPortrait() && !paused) pause(false);
+      },
+      onError(message, options = {}) {
+        if (!current()) return;
+        if (options.recoverable) { coop.message = message; if (game?.online) { toast = message; toastUntil = clock + 3; } return; }
+        disconnect(); audio?.pause(); game = null; screen = 'coop'; paused = false;
+        coop.view = 'error'; coop.message = message; resize(size);
+      },
+      onEnd(message) {
+        if (!current()) return;
+        disconnect(); audio?.pause(); game = null; screen = 'coop'; paused = false;
+        coop.view = 'error'; coop.message = message; resize(size);
+      },
+    });
+    if (join) network.join(coop.code); else network.create(selectedMap, selectedDifficulty);
+  }
 
   function rounded(x, y, w, h, radius = 14, fill, stroke) {
     ctx.beginPath(); ctx.moveTo(x + radius, y); ctx.lineTo(x + w - radius, y); ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
@@ -242,8 +330,64 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     });
     text(difficultyHints[selectedDifficulty], x + cardW / 2, difficultyY + (compact ? 82 : 74), 18, C.teal, 700, 'center');
     const startY = difficultyY + 104;
-    button(x, startY, cardW, compact ? 58 : 64, '开始突围     →', start, { fill: C.lime, color: C.bg, border: C.lime, fontSize: compact ? 22 : 23 });
+    const soloW = Math.round(cardW * .64);
+    button(x, startY, soloW, compact ? 58 : 64, '开始突围   →', start, { fill: C.lime, color: C.bg, border: C.lime, fontSize: compact ? 22 : 23 });
+    button(x + soloW + 10, startY, cardW - soloW - 10, compact ? 58 : 64, '双人合作', openCoop, { border: C.teal, color: C.teal, fontSize: 21 });
     text(best.score ? `最佳战绩  ${best.score} 分 · 第 ${best.wave} 波` : '每局 3 次复活 · 清关自动推进', x + cardW / 2, startY + (compact ? 78 : 94), 18, C.muted, 650, 'center');
+  }
+  function drawCoop() {
+    drawLogo(38, 27, layout.compact);
+    const cx = layout.w / 2, panelX = cx - 260, panelY = (layout.h - 430) / 2 + 20;
+    button(38, layout.h - 67, 170, 46, '返回地图选择', menu, { fontSize: 19 });
+    rounded(panelX, panelY, 520, 430, 22, C.panel, C.line);
+    text('双人合作', cx, panelY + 38, 30, C.ink, 800, 'center');
+    if (coop.view === 'join') {
+      text(coop.code.padEnd(6, '·').split('').join('  '), cx, panelY + 88, 35, C.lime, 800, 'center');
+      text('输入朋友的 6 位房间码', cx, panelY + 124, 18, C.muted, 650, 'center');
+      ['1', '2', '3', '4', '5', '6', '7', '8', '9', '删除', '0', '加入房间'].forEach((value, index) => {
+        const x = panelX + 30 + index % 3 * 155, y = panelY + 159 + Math.floor(index / 3) * 57;
+        const join = value === '加入房间';
+        button(x, y, 145, 47, value, () => {
+          if (join) connectCoop(true);
+          else if (value === '删除') coop.code = coop.code.slice(0, -1);
+          else if (coop.code.length < 6) coop.code += value;
+        }, { fontSize: 23, fill: join && coop.code.length === 6 ? C.lime : C.bg, color: join && coop.code.length === 6 ? C.bg : C.ink, active: !join || coop.code.length === 6 });
+      });
+      return;
+    }
+    if (coop.view === 'connecting') {
+      text('正在连接联机服务…', cx, panelY + 175, 25, C.teal, 700, 'center');
+      text('首次启动云端服务可能需要片刻', cx, panelY + 224, 18, C.muted, 650, 'center');
+      button(panelX + 50, panelY + 328, 420, 54, '取消连接', openCoop);
+      return;
+    }
+    if (coop.view === 'error') {
+      text('房间连接已结束', cx, panelY + 110, 24, C.coral, 750, 'center');
+      const lines = String(coop.message).match(/.{1,23}/gu) || [];
+      lines.slice(0, 3).forEach((value, index) => text(value, cx, panelY + 163 + index * 31, 20, C.ink, 650, 'center'));
+      button(panelX + 50, panelY + 328, 420, 54, '重新创建或加入', openCoop, { fill: C.lime, color: C.bg, border: C.lime });
+      return;
+    }
+    if (coop.view === 'room' && coop.room) {
+      const room = coop.room, host = room.playerId === room.hostId;
+      const ready = room.players?.filter(player => player.connected !== false).length === 2;
+      text('把房间码告诉朋友', cx, panelY + 84, 19, C.muted, 650, 'center');
+      text(room.code, cx, panelY + 136, 52, C.lime, 800, 'center');
+      text(`${mapLabels[room.mapId]?.[0] || room.mapId} · ${DIFFICULTIES[room.difficultyId]?.label || ''}`, cx, panelY + 189, 21, C.teal, 750, 'center');
+      for (const [index, id] of ['p1', 'p2'].entries()) {
+        const connected = room.players?.some(player => player.id === id && player.connected !== false);
+        text(`${index + 1}P ${id === room.playerId ? '你' : '队友'} · ${connected ? '已加入' : '等待加入'}`, cx - 120 + index * 240, panelY + 253, 21, index ? '#a9dbff' : C.ink, 750, 'center');
+      }
+      button(panelX + 50, panelY + 315, 420, 57, host ? ready ? '开始双人突围' : '等待队友加入' : '等待房主开始', () => network?.start(),
+        { active: host && ready, fill: host && ready ? C.lime : C.bg, color: host && ready ? C.bg : C.muted, border: host && ready ? C.lime : C.line, fontSize: 23 });
+      text(coop.message || '离开或断线会结束本房间', cx, panelY + 398, 18, coop.message ? C.coral : C.muted, 650, 'center');
+      return;
+    }
+    text('和朋友一起守住战场', cx, panelY + 94, 23, C.teal, 750, 'center');
+    text(`${mapLabels[selectedMap]?.[0]} · ${DIFFICULTIES[selectedDifficulty].label}`, cx, panelY + 144, 21, C.muted, 650, 'center');
+    button(panelX + 50, panelY + 205, 420, 60, '创建房间', () => connectCoop(), { fill: C.lime, color: C.bg, border: C.lime, fontSize: 24 });
+    button(panelX + 50, panelY + 284, 420, 60, '输入房间码加入', () => { coop.view = 'join'; coop.code = ''; }, { border: C.teal, color: C.teal, fontSize: 23 });
+    text('两台手机联机 · 房主开始 · 合作闯关', cx, panelY + 392, 18, C.muted, 650, 'center');
   }
   function bar(x, y, w, value, max, color) { rounded(x, y, w, 7, 3, '#34464a'); if (value > 0) rounded(x, y, Math.max(6, w * clamp(value / max, 0, 1)), 7, 3, color); }
   function drawHUD() {
@@ -322,29 +466,30 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
       text(toast, tx, layout.h - 35, 18, C.ink, 700, 'center');
     }
     if (paused && !help) drawPause();
-    if (game.status === 'dead') drawResult();
+    if (game.status === 'dead' && !paused) drawResult();
   }
   function shade() { ctx.fillStyle = 'rgba(8,17,21,.79)'; ctx.fillRect(0, 0, layout.w, layout.h); buttons = []; }
   function drawPause() {
     shade(); const x = layout.w / 2 - 220, y = layout.h / 2 - 178;
     rounded(x, y, 440, 356, 22, C.panel, C.line);
-    text('喘口气，再出发。', layout.w / 2, y + 49, 31, C.ink, 750, 'center');
+    const teammatePaused = game.online && !localOwnsPause();
+    text(teammatePaused ? '队友暂停了战斗' : '喘口气，再出发。', layout.w / 2, y + 49, 31, C.ink, 750, 'center');
     text(`当前${game.difficulty.label}难度 · 战场与倒计时已暂停`, layout.w / 2, y + 88, 18, C.muted, 650, 'center');
-    button(x + 28, y + 123, 384, 48, '继续突围', () => { paused = false; lastTimestamp = null; clearInput(); }, { fill: C.lime, border: C.lime, color: C.bg });
-    button(x + 28, y + 184, 184, 47, '重新开始', start, { fontSize: 20 }); button(x + 228, y + 184, 184, 47, '返回战区', menu, { fontSize: 20 });
+    button(x + 28, y + 123, 384, 48, teammatePaused ? '等待队友继续' : '继续突围', continueGame, { fill: C.lime, border: C.lime, color: C.bg, active: !teammatePaused });
+    button(x + 28, y + 184, 184, 47, game.online ? '离开房间' : '重新开始', game.online ? menu : start, { fontSize: 20 }); button(x + 228, y + 184, 184, 47, '返回战区', menu, { fontSize: 20 });
     button(x + 28, y + 245, 184, 47, muted ? '音效：关' : '音效：开', toggleSound, { fontSize: 18 });
     button(x + 228, y + 245, 184, 47, aimAssist ? '辅助瞄准：开' : '辅助瞄准：关', toggleAim, { fontSize: 18 });
-    text('返回战区可调整难度 · Esc / P 继续', layout.w / 2, y + 326, 18, C.muted, 650, 'center');
+    text(game.online ? '全队已暂停 · 每位暂停玩家需点击继续' : '返回战区可调整难度 · Esc / P 继续', layout.w / 2, y + 326, 18, C.muted, 650, 'center');
   }
   function drawResult() {
     shade(); const boxH = 418, x = layout.w / 2 - 248, y = layout.h / 2 - boxH / 2;
     rounded(x, y, 496, boxH, 22, C.panel, C.line);
-    text('蛋壳裂了，勇气还在。', layout.w / 2, y + 48, 29, C.ink, 800, 'center');
-    text(`${game.difficulty.label}难度 · 调整走位，再试一次`, layout.w / 2, y + 86, 18, C.muted, 650, 'center');
+    text(game.online && game.teamStatus !== 'dead' ? '队友还在战斗，复活支援！' : '蛋壳裂了，勇气还在。', layout.w / 2, y + 48, 29, C.ink, 800, 'center');
+    text(`${game.difficulty.label}难度 · ${game.online ? '合作战绩' : '调整走位，再试一次'}`, layout.w / 2, y + 86, 18, C.muted, 650, 'center');
     text(String(game.score), layout.w / 2, y + 143, 51, C.ink, 800, 'center'); text('本局得分', layout.w / 2, y + 181, 18, C.muted, 700, 'center');
     text(`第 ${game.wave} 波   /   ${game.kills} 次击败   /   ${Math.floor(game.time)} 秒`, layout.w / 2, y + 213, 18, C.teal, 700, 'center');
     button(x + 28, y + 251, 440, 48, game.revivesRemaining ? `免费复活 · 剩余 ${game.revivesRemaining} 次` : '本局复活已用完', revive, { fill: game.revivesRemaining ? C.lime : C.panel, border: game.revivesRemaining ? C.lime : C.line, color: game.revivesRemaining ? C.bg : C.muted, active: game.revivesRemaining > 0 });
-    button(x + 28, y + 312, 440, 48, '再来一局   →', start, { fill: C.panel, border: C.line, color: C.ink });
+    button(x + 28, y + 312, 440, 48, game.online ? '离开房间' : '再来一局   →', game.online ? menu : start, { fill: C.panel, border: C.line, color: C.ink });
     button(x + 150, y + 373, 196, 28, '返回地图选择', menu, { fill: C.panel, border: C.panel, color: C.muted, fontSize: 18 });
   }
   function drawHelp() {
@@ -393,7 +538,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const arena = arenaBounds();
     // Game.update equips before firing; assistance must use that same weapon
     // on the switch frame, including a slot followed by a Q/Tab cycle.
-    let aimWeapon = p.weapons[actions.weaponSlot] ? actions.weaponSlot : p.currentWeapon;
+    let aimWeapon = p.weapons[actions.weaponSlot] ? actions.weaponSlot : game.pendingWeaponId || p.currentWeapon;
     if (actions.weaponNext && !game.previousInput.weaponNext) {
       const owned = weaponIds.filter(id => p.weapons[id]);
       aimWeapon = owned[(owned.indexOf(aimWeapon) + 1) % owned.length];
@@ -436,6 +581,15 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     const k = key.length === 1 ? key.toLowerCase() : key;
     if (type === 'up') { keys.delete(k); return; }
     audio?.unlock();
+    if (screen === 'coop') {
+      if (k === 'Escape') { if (coop.view === 'join') coop.view = 'select'; else menu(); }
+      else if (coop.view === 'join') {
+        if (/^\d$/.test(k) && coop.code.length < 6) coop.code += k;
+        if (k === 'Backspace') coop.code = coop.code.slice(0, -1);
+        if (k === 'Enter') connectCoop(true);
+      }
+      return;
+    }
     if (k === 'Escape' || k === 'p') { if (help) { help = false; clearInput(); } else togglePause(); return; }
     if (screen === 'menu') { if (k === 'Enter' && !help) start(); return; }
     if (paused || help || !game || ['dead', 'won'].includes(game.status)) return;
@@ -475,7 +629,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     }
   }
   function saveResult() {
-    if (!game || resultSaved || game.status !== 'dead') return;
+    if (!game || game.online || resultSaved || game.status !== 'dead') return;
     resultSaved = true; best = { wave: Math.max(best.wave, game.wave), score: Math.max(best.score, game.score) };
     try { storage?.setItem('shellbound.best.v1', JSON.stringify(best)); } catch { /* Continue without persistence. */ }
     clearInput();
@@ -483,7 +637,7 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
   function frame(timestamp) {
     const dt = lastTimestamp === null ? 0 : clamp((timestamp - lastTimestamp) / 1000, 0, .05); lastTimestamp = timestamp;
     clock += dt;
-    if (game && !paused && !help && !isPortrait()) {
+    if (game && !paused && !help && !isPortrait() && !(game.online && backgrounded)) {
       game.update(dt, collectInput()); saveResult();
       audio?.playEvents(game.events);
       for (const event of game.events || []) {
@@ -492,13 +646,13 @@ export function createApp({ canvas, width, height, pixelRatio = 1, storage, plat
     }
     ctx.setTransform(size.pixelRatio, 0, 0, size.pixelRatio, 0, 0); ctx.fillStyle = C.bg; ctx.fillRect(0, 0, size.width, size.height);
     buttons = [];
-    if (isPortrait()) { audio?.pause(); drawPortrait(); clearInput(); return; }
+    if (isPortrait()) { if (game?.online && !paused) pause(false); audio?.pause(); drawPortrait(); clearInput(); return; }
     ctx.translate(layout.ox, layout.oy); ctx.scale(layout.scale, layout.scale);
-    if (screen === 'menu') drawMenu(); else drawGame();
+    if (screen === 'menu') drawMenu(); else if (screen === 'coop') drawCoop(); else drawGame();
     if (help) drawHelp();
   }
   function getSnapshot() {
-    return { grenadeAim: grenadeAim(), screen, paused, help, weaponPicker, selectedMap, selectedDifficulty, best, settings: { muted, aimAssist, difficultyId: selectedDifficulty }, audio: audio?.getSnapshot() || null, aim: { facing, manual: aimManual, targetId: game?.aimTarget?.id ?? null }, layout: { ...layout }, controls: controlBounds(), pauseControl: pauseBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { status: game.status, wave: game.wave, score: game.score, revivesRemaining: game.revivesRemaining, time: game.time, kills: game.kills, mapId: game.map.id, difficultyId: game.difficulty.id, environment: game.environmentSnapshot?.() || null, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, reviveProtectionRemaining: game.player.reviveProtectionRemaining, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, boostCharges: game.player.boostCharges, boostRemaining: game.player.boostRemaining, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
+    return { grenadeAim: grenadeAim(), screen, paused, help, weaponPicker, selectedMap, selectedDifficulty, best, coop: { ...coop, room: coop.room ? { ...coop.room } : null }, settings: { muted, aimAssist, difficultyId: selectedDifficulty }, audio: audio?.getSnapshot() || null, aim: { facing, manual: aimManual, targetId: game?.aimTarget?.id ?? null }, layout: { ...layout }, controls: controlBounds(), pauseControl: pauseBounds(), arena: game ? arenaBounds() : null, buttons: buttons.map(({ x, y, w, h, label, r, cx, cy, role }) => ({ x, y, w, h, label, r, cx, cy, role })), game: game ? { online: game.online === true, players: (game.players || []).map(player => ({ id: player.id, x: player.x, y: player.y, hp: player.hp, currentWeapon: player.currentWeapon })), status: game.status, wave: game.wave, score: game.score, revivesRemaining: game.revivesRemaining, time: game.time, kills: game.kills, mapId: game.map.id, difficultyId: game.difficulty.id, environment: game.environmentSnapshot?.() || null, enemyCount: game.enemies.length, bulletCount: game.bullets.length, enemyBulletCount: game.bullets.filter(b => b.owner === 'enemy').length, bosses: game.enemies.filter(e => e.type === 'tank').map(e => ({ hp: e.hp, maxHp: e.maxHp, rangedCharge: e.rangedCharge, rangedCooldown: e.rangedCooldown })), grenadeCount: game.grenades.length, player: { x: game.player.x, y: game.player.y, angle: game.player.angle, reviveProtectionRemaining: game.player.reviveProtectionRemaining, hp: game.player.hp, shield: game.player.shield, grenades: game.player.grenades, boostCharges: game.player.boostCharges, boostRemaining: game.player.boostRemaining, currentWeapon: game.player.currentWeapon, weapons: JSON.parse(JSON.stringify(game.player.weapons)) } } : null };
   }
   resize({ width, height, pixelRatio });
   return { frame, resize, handleTouch, handleKey, handlePointer, pause, resume, getSnapshot };

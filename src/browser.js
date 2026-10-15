@@ -47,7 +47,8 @@ for (const type of ['down', 'up']) {
 }
 window.addEventListener('resize', () => app.resize(size()));
 window.addEventListener('blur', () => app.pause());
-document.addEventListener('visibilitychange', () => { if (document.hidden) app.pause(); });
+window.addEventListener('focus', () => app.resume());
+document.addEventListener('visibilitychange', () => { if (document.hidden) app.pause(); else app.resume(); });
 window.addEventListener('pagehide', () => { app.pause(); audio.pause(); });
 function frame(timestamp) { app.frame(timestamp); requestAnimationFrame(frame); }
 requestAnimationFrame(frame);

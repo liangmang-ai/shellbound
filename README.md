@@ -6,10 +6,11 @@
 
 需要 Node.js 20 或更新版本。
 
-`npm run build` 会重新创建 `dist/web` 和 `dist/wechat`。当前已导入的微信工程目录含本地 Git 仓库与私有配置，重构建前请备份这些内容，并在构建后恢复；仅更换 AppID 无需重构建。
+`npm run build` 会重新创建 `dist/web`，更新 `dist/wechat` 中的游戏产物。微信工程已有的本地 Git 仓库、`project.config.json`、`project.private.config.json` 和其他用户文件会保留；全新构建会复制源码中的工程配置。仅更换 AppID 无需重构建。
 
 ```sh
 npm install
+npm --prefix server ci
 npm run build
 npm run dev
 ```
@@ -19,9 +20,10 @@ npm run dev
 ```sh
 npm test
 npm run test:browser
+npm run test:coop
 ```
 
-`npm test` 运行核心玩法、地图机关、辅助瞄准、音效和无 DOM 的微信入口验证。浏览器检查需要本机安装 Google Chrome；它检查键鼠、多点触控、三种手机及两种平板横屏尺寸、暂停与重开，并在 `artifacts/` 保存截图。运行浏览器检查前先构建。
+`npm test` 运行核心玩法、地图机关、辅助瞄准、音效、房间服务和无 DOM 的微信入口验证。浏览器检查需要本机安装 Google Chrome；它检查键鼠、多点触控、三种手机及两种平板横屏尺寸、暂停与重开，并在 `artifacts/` 保存截图。`test:coop` 会启动 8787 端口的本地后端和两个独立浏览器，检查房间码加入、同步战斗、独立道具与复活、暂停、旋转和断线清理；运行前先停止已启动的 `npm run server`。运行浏览器检查前先构建。
 
 ## MVP 内容
 
@@ -78,7 +80,9 @@ dist/wechat/    微信版：game.js、game.json、project.config.json、assets/a
 
 在微信开发者工具中以「小游戏」项目导入 `dist/wechat`。当前源码和已导入工程均使用用户提供的小游戏 AppID `wx1a1efb651d164fae`。用户此前已上传并提交旧版审核，本次本地优化不会自动上传或替换审核中的版本。仅切换账号时，同时修改 `wechat/project.config.json` 和已导入工程 `dist/wechat/project.config.json` 的 AppID，再重新打开工程。开发者工具允许的测试方式和 AppID 权限以实际工具为准。参考 [微信官方小游戏示例配置](https://github.com/wechat-miniprogram/minigame-lockstep-demo/blob/master/project.config.json)。
 
-微信入口使用 `wx.createCanvas`、触摸事件和本地存储；菜单、HUD 与战斗都在 Canvas 内绘制。打包后没有浏览器 DOM 依赖，也没有后端接口。
+微信入口使用 `wx.createCanvas`、触摸事件和本地存储；菜单、HUD 与战斗都在 Canvas 内绘制，打包后没有浏览器 DOM 依赖。单人模式可独立运行；双人模式使用云托管 WebSocket 后端，需要先完成服务端部署。
+
+双人合作后端的本地运行、微信云托管配置与手动部署步骤见 [双人合作部署说明](docs/wechat-multiplayer.md)。代码包生成与本地验证不代表云端已经部署，也不会自动替换用户已上传的小游戏版本。
 
 已验证微信开发者工具的小游戏导入和模拟器运行；浏览器验证覆盖三种横屏尺寸。Android/iOS 真机兼容性、不同机型性能和平台提审仍需验证，当前构建不能等同于已上线微信小游戏。
 
@@ -86,6 +90,8 @@ dist/wechat/    微信版：game.js、game.json、project.config.json、assets/a
 
 ```text
 src/game.js       战斗、敌人、地图、波次、掉落与装备规则
+src/coop-game.js  双人共享世界、独立玩家状态与服务端战斗快照
+src/multiplayer.js 房间连接、操作发送与客户端同步适配
 src/app.js        输入、Canvas 界面与游戏状态切换
 src/render.js     原创角色、场景、HUD 与战斗效果绘制
 src/aim.js        前方目标筛选、视线检查与辅助瞄准
@@ -95,6 +101,9 @@ src/browser.js    浏览器启动及输入、页面生命周期适配
 wechat/game.js    微信启动及触摸、后台生命周期适配
 scripts/build.mjs  两个平台打包
 scripts/serve.mjs  浏览器本地服务
+scripts/package-server.mjs 微信云托管服务端白名单代码包
+server/server.mjs 双人房间与权威战斗服务
+server/Dockerfile 云托管镜像构建入口，构建上下文为仓库根
 web/index.html    浏览器页面
 ```
 
@@ -104,4 +113,4 @@ web/index.html    浏览器页面
 
 人物、怪物、地图、界面和效果均由本项目 Canvas 代码绘制，音效由本项目声音规则合成，不引用《僵尸危机 3》/Boxhead 或其他游戏的美术、音效、地图或源代码。此版本采用通用的俯视射击、波次闯关与拾取补给机制。新增素材时继续保留作者和授权信息；项目的原创制作说明不构成法律结论。
 
-MVP 暂未包含联网双人、排行榜服务、微信登录、广告、付费、持久账号系统或正式发行配置。
+双人合作版提供房间码邀请与两名玩家共享战斗，生产端通过微信云托管获取微信身份。房间保存在单实例内存中，离开、断线或服务重启会结束房间；本地功能不代表已完成云端部署、两机真机测试或平台审核。暂未包含跨实例房间、断线续局、排行榜服务、广告、付费或持久账号系统。
