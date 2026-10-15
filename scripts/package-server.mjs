@@ -16,7 +16,7 @@ export async function packageServer({ outputDir = resolve(root, 'artifacts/shell
   // Resolve every input before replacing a previous package. Never copy the
   // checkout, generated WeChat project, database credentials, or node_modules.
   const inputs = await Promise.all(files.map(async path => ({ path, data: await readFile(resolve(root, path)) })));
-  const dockerfile = await readFile(resolve(root, 'server/Dockerfile'));
+  const dockerfile = await readFile(resolve(root, 'Dockerfile'));
   await rm(outputDir, { recursive: true, force: true });
   for (const { path, data } of inputs) {
     const destination = resolve(outputDir, path);

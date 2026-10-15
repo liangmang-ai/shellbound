@@ -49,8 +49,35 @@ artifacts/shellbound-coop-server/
 在完整仓库中自行构建镜像时，命令为：
 
 ```sh
-docker build -f server/Dockerfile -t shellbound-coop .
+docker build -t shellbound-coop .
 ```
+
+## 绑定个人 GitHub，之后直接执行流水线
+
+首次 ZIP 部署成功后，可以把后续发布来源改成 GitHub。使用个人账号 `xykyankun` 授权访问私有仓库 `xykyankun/shellbound`；GitHub 授权页确认账号和仓库范围，不要选择公司仓库。
+
+在服务 `express-9qmf` 的「服务设置 → 流水线」中配置：
+
+| 字段 | 值 |
+| --- | --- |
+| 代码源 | GitHub |
+| 代码仓库 | `xykyankun/shellbound` |
+| 分支 | `codex/shellbound-mvp` |
+| 目标目录 | 留空，使用仓库根目录 |
+| 端口 | `8080` |
+| Dockerfile 文件 | 有 |
+| Dockerfile 名称 | `Dockerfile` |
+| 推送触发 | 初次配置先不勾选，保留手动发布 |
+
+`Dockerfile` 位于仓库根目录；构建上下文也必须是仓库根目录，容器构建需要同时读取 `server/` 与 `src/` 中的文件。不要将目标目录选成 `server/`。
+
+后续流程是：代码修改完成并通过验证、连续三轮审查后，提交并推送个人仓库；然后在「部署发布 → 发布」里选择「执行流水线」，由云托管拉取配置分支中的代码、构建镜像并发布。无需重新打包或上传 ZIP。发布时确认选择的是本次要上线的提交，保留单实例、唯一版本接收流量及原有生产环境变量的配置。
+
+保存流水线配置和向 GitHub 推送代码，都不等于云端已经发布。这份配置只准备手动触发的流水线，不设置 push 自动部署。发布会结束现有实例中的战局，建议在没有玩家进行游戏时更新。
+
+如以后明确需要推送即上线，可在控制台勾选「推送触发」。官方说明此开关会在对应分支 push 或 merge 后自动构建、部署并全量发布，并非只构建待确认的版本；启用后要将每次推送都视为一次线上发布，不要删除云托管创建的 GitHub webhook。
+
+该方式只更新联机后端；小游戏客户端界面或玩法修改后，仍需在微信开发者工具编译、上传体验版，并按需要完成审核发布。官方流程见[服务设置：流水线](https://developers.weixin.qq.com/minigame/dev/wxcloudrun/src/guide/service/pipeline.html)和[部署发布](https://developers.weixin.qq.com/minigame/dev/wxcloudrun/src/guide/service/online.html)。
 
 ## 云托管配置
 

@@ -1,4 +1,5 @@
 FROM node:22-alpine
+# Use the repository root as the build context for GitHub and ZIP deployments.
 WORKDIR /app
 COPY server/package*.json ./server/
 RUN npm ci --prefix server --omit=dev

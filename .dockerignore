@@ -2,9 +2,9 @@
 # the Docker build context. The server image uses this explicit allowlist.
 **
 !package.json
+!Dockerfile
 !server/
 server/**
-!server/Dockerfile
 !server/server.mjs
 !server/package.json
 !server/package-lock.json

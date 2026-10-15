@@ -82,7 +82,7 @@ dist/wechat/    微信版：game.js、game.json、project.config.json、assets/a
 
 微信入口使用 `wx.createCanvas`、触摸事件和本地存储；菜单、HUD 与战斗都在 Canvas 内绘制，打包后没有浏览器 DOM 依赖。单人模式可独立运行；双人模式使用云托管 WebSocket 后端，需要先完成服务端部署。
 
-双人合作后端的本地运行、微信云托管配置与手动部署步骤见 [双人合作部署说明](docs/wechat-multiplayer.md)。代码包生成与本地验证不代表云端已经部署，也不会自动替换用户已上传的小游戏版本。
+双人合作后端的本地运行、微信云托管配置、GitHub 流水线与 ZIP 部署步骤见 [双人合作部署说明](docs/wechat-multiplayer.md)。云托管可以绑定个人仓库，之后直接拉取代码发布；仓库根目录已提供 Dockerfile。代码推送与本地验证不代表云端已经部署，也不会自动替换用户已上传的小游戏版本。
 
 已验证微信开发者工具的小游戏导入和模拟器运行；浏览器验证覆盖三种横屏尺寸。Android/iOS 真机兼容性、不同机型性能和平台提审仍需验证，当前构建不能等同于已上线微信小游戏。
 
@@ -103,7 +103,7 @@ scripts/build.mjs  两个平台打包
 scripts/serve.mjs  浏览器本地服务
 scripts/package-server.mjs 微信云托管服务端白名单代码包
 server/server.mjs 双人房间与权威战斗服务
-server/Dockerfile 云托管镜像构建入口，构建上下文为仓库根
+Dockerfile       云托管镜像构建入口，构建上下文为仓库根
 web/index.html    浏览器页面
 ```
 
