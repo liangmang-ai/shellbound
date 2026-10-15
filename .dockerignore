@@ -12,3 +12,4 @@ server/**
 src/**
 !src/game.js
 !src/coop-game.js
+!src/profile.js

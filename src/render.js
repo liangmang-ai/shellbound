@@ -474,7 +474,7 @@ function reviveProtection(ctx, player, map, t, foreground = false) {
 // Optional screen bounds supply a camera measured in world coordinates. Callers
 // without a camera keep the original world-space rendering behavior.
 export function drawArena(ctx, game, bounds = {}) {
-  const { time = 0, camera, grenadeAim } = bounds;
+  const { time = 0, camera, grenadeAim, profiles = [] } = bounds;
   const map = game.map || {}, w = num(map.width, 1280), h = num(map.height, 760), t = num(time) * .001;
   const palette = themes[map.id] || themes[map.theme] || themes.courtyard;
   const factory = map.id === 'greenhouse' || map.theme === 'factory';
@@ -539,12 +539,15 @@ export function drawArena(ctx, game, bounds = {}) {
       hurt: enemy ? num(actor.hitFlash) : num(actor.reviveProtectionRemaining) > 0 ? 0 : num(actor.invulnerability), weapon: actor.currentWeapon || 'pistol', time });
     ctx.restore();
     if (!enemy && game.online) {
-      const label = actor.id === 'p2' ? '2P' : '1P';
-      ctx.font = 'bold 16px sans-serif';
+      const profile = profiles.find(player => player.id === actor.id)?.profile;
+      const name = Array.from(String(profile?.nickName || profile?.nickname || (actor.id === 'p2' ? '队友 2' : '队友 1')));
+      const label = name.length > 8 ? `${name.slice(0, 7).join('')}…` : name.join('');
+      ctx.font = '800 17px "PingFang SC", "Microsoft YaHei", sans-serif';
       const width = ctx.measureText(label).width + 20;
-      ctx.fillStyle = '#18353de6'; roundRect(ctx, num(actor.x) - width / 2, num(actor.y) + 34, width, 25, 9); ctx.fill();
+      const labelY = num(actor.y) - num(actor.radius, 20) - 25;
+      ctx.fillStyle = '#18353de6'; roundRect(ctx, num(actor.x) - width / 2, labelY - 13, width, 26, 9); ctx.fill();
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = actor.id === 'p2' ? '#cce8ff' : '#fff1c9';
-      ctx.fillText(label, num(actor.x), num(actor.y) + 47);
+      ctx.fillText(label, num(actor.x), labelY);
     }
     if (enemy && (actor.type === 'tank' || actor.hp < actor.maxHp)) {
       const ratio = Math.max(0, Math.min(1, num(actor.hp) / Math.max(1, num(actor.maxHp, 1)))), radius = num(actor.radius, 19);

@@ -92,6 +92,7 @@ export function getWaveComposition(wave, difficultyId = 'normal') {
   return { regularCount, tankCount, total: regularCount + tankCount };
 }
 const UNLOCKS = { 1: 'smg', 2: 'shotgun', 3: 'rifle', 5: 'lmg', 7: 'sniper' };
+const WAVE_INTERMISSION_SECONDS = 3;
 const TAU = Math.PI * 2;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const distanceSquared = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
@@ -252,6 +253,7 @@ export class Game {
     this.events = [];
     this.wave = 0;
     this.status = 'intermission';
+    this.intermissionRemaining = 0;
     this.score = 0;
     this.kills = 0;
     this.revivesRemaining = FREE_REVIVES;
@@ -285,7 +287,8 @@ export class Game {
   }
 
   startNextWave() {
-    if (this.status !== 'intermission') return false;
+    if (this.status !== 'intermission' || this.intermissionRemaining > 0) return false;
+    this.intermissionRemaining = 0;
     this.wave += 1;
     this.waveKills = 0;
     const composition = getWaveComposition(this.wave, this.difficulty.id);
@@ -295,6 +298,15 @@ export class Game {
     this.spawnQueue = new WaveSpawnQueue(this.wave, composition, Math.floor(this.random() * 0x100000000));
     this.events.push({ type: 'wave', wave: this.wave });
     return true;
+  }
+
+  updateIntermission(elapsed) {
+    if (this.status !== 'intermission') return;
+    this.intermissionRemaining = Math.max(0, this.intermissionRemaining - elapsed);
+    if (this.intermissionRemaining <= 1e-9) {
+      this.intermissionRemaining = 0;
+      this.startNextWave();
+    }
   }
 
   equipWeapon(id) {
@@ -393,7 +405,7 @@ export class Game {
     p.hp = p.maxHp; p.shield = 35;
     p.invulnerability = 3; p.reviveProtectionRemaining = 3;
     this.revivesRemaining -= 1;
-    this.status = 'playing';
+    this.status = this.intermissionRemaining > 0 ? 'intermission' : 'playing';
     this.bullets = this.bullets.filter(bullet => bullet.owner !== 'enemy');
     this.grenades = [];
     this.previousInput = {};
@@ -405,9 +417,11 @@ export class Game {
   }
 
   update(dt, input = {}) {
-    dt = clamp(finite(dt), 0, 0.1);
+    const elapsed = Math.max(0, finite(dt));
+    dt = Math.min(elapsed, 0.1);
     this.events = [];
-    if (dt <= 0 || this.status === 'dead' || this.status === 'won') return;
+    if (dt <= 0 || !['playing', 'intermission'].includes(this.status)) return;
+    const wasIntermission = this.status === 'intermission';
     this.time += dt;
     this.updateMap(dt);
     this.updatePlayer(dt, input);
@@ -428,6 +442,9 @@ export class Game {
     } else if (this.status === 'playing' && this.spawnQueue.length === 0 && this.enemies.length === 0) {
       this.clearWave();
     }
+    // A newly cleared wave receives the full break; stalled active frames still
+    // count toward an existing break without increasing the physics step.
+    if (wasIntermission) this.updateIntermission(elapsed);
   }
 
   updatePlayer(dt, input = {}) {
@@ -1065,6 +1082,7 @@ export class Game {
     this.score += this.wave * 100;
     this.events.push({ type: 'waveClear', wave: this.wave });
     this.status = 'intermission';
+    this.intermissionRemaining = WAVE_INTERMISSION_SECONDS;
     const p = this.player;
     const drops = [['ammo', -55, 0], ['shield', 55, 0], ['grenade', 0, 55], ['health', 0, -55]];
     for (const [type, dx, dy] of drops) this.spawnPickup(type, p.x + dx, p.y + dy, { guaranteed: true });
@@ -1075,7 +1093,6 @@ export class Game {
       this.spawnPickup('weapon', p.x + 82, p.y + 55, { weaponId: unlock, guaranteed: true });
       this.events.push({ type: 'unlock', weaponId: unlock });
     }
-    this.startNextWave();
     return true;
   }
 }

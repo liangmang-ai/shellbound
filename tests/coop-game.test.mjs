@@ -162,17 +162,115 @@ test('only the living collector receives physical pickups; each physical drop is
   assert.equal(game.pickups.length, 1);
 });
 
-test('clearing a shared wave advances it once and guarantees both players the permanent weapon unlock', () => {
+test('clearing a shared wave grants both unlocks immediately and advances once after its break', () => {
   const game = arena();
   game.players.p2.hp = 0;
   game.spawnQueue = [];
   game.update(.01);
-  assert.equal(game.wave, 2);
+  assert.equal(game.wave, 1);
+  assert.equal(game.status, 'intermission');
+  assert.equal(game.intermissionRemaining, 3);
   assert.equal(game.score, 100);
   assert.ok(game.players.p1.weapons.smg);
   assert.ok(game.players.p2.weapons.smg, 'downed teammate retains permanent progression');
   assert.equal(game.events.filter(event => event.type === 'waveClear').length, 1);
   assert.deepEqual(game.events.filter(event => event.type === 'unlock').map(event => event.playerId), ['p1', 'p2']);
+  advance(game, 2.999);
+  assert.equal(game.wave, 1);
+  game.update(.001);
+  assert.equal(game.wave, 2);
+  assert.equal(game.status, 'playing');
+  assert.equal(game.intermissionRemaining, 0);
+  assert.equal(game.events.filter(event => event.type === 'wave').length, 1);
+  game.update(.1);
+  assert.equal(game.wave, 2);
+  assert.equal(game.score, 100);
+});
+
+test('two living players move and collect during one shared countdown carried by every snapshot format', () => {
+  const game = arena();
+  game.spawnQueue = [];
+  game.clearWave();
+  game.pickups = [];
+  for (const player of game.getPlayers()) {
+    player.shield = 0;
+    game.spawnPickup('shield', player.x, player.y);
+  }
+  game.update(1.25, { p1: { moveX: 1 }, p2: { moveY: 1 } });
+  assert.equal(game.intermissionRemaining, 1.75, 'both participant updates deduct only one world delta');
+  close(game.players.p1.x, 422.5);
+  close(game.players.p2.y, 322.5);
+  assert.equal(game.players.p1.shield, 40);
+  assert.equal(game.players.p2.shield, 40);
+  for (const id of ['p1', 'p2']) {
+    for (const view of [game.snapshot(id), game.networkSnapshot(id),
+      game.networkSnapshot(id, { compact: true, includeMetadata: false })]) {
+      assert.equal(view.intermissionRemaining, 1.75);
+      assert.equal(view.wave, 1);
+      assert.equal(view.status, 'intermission');
+      assert.equal(view.teamStatus, 'intermission');
+    }
+  }
+  game.update(20);
+  assert.equal(game.wave, 2);
+  assert.equal(game.status, 'playing');
+  assert.equal(game.events.filter(event => event.type === 'wave').length, 1);
+  assert.equal(game.spawnTimer, .25);
+  assert.ok(game.spawnQueue.length > 0);
+});
+
+test('teammate and full team recovery preserve the shared break without skipping unspawned waves', () => {
+  const game = arena();
+  game.spawnQueue = [];
+  game.clearWave();
+  game.update(.5);
+  game.players.p2.hp = 0;
+  game.update(.1);
+  close(game.intermissionRemaining, 2.4);
+  const downedView = game.snapshot('p2');
+  assert.equal(downedView.status, 'dead');
+  assert.equal(downedView.teamStatus, 'intermission');
+  assert.equal(downedView.intermissionRemaining, game.intermissionRemaining);
+  assert.equal(game.revive('p2'), true);
+  assert.equal(game.status, 'intermission');
+  close(game.intermissionRemaining, 2.4);
+  game.players.p1.hp = 0;
+  game.players.p2.hp = 0;
+  game.update(.1);
+  assert.equal(game.status, 'dead');
+  const remaining = game.intermissionRemaining;
+  game.update(50);
+  assert.equal(game.intermissionRemaining, remaining);
+  assert.equal(game.revive('p1'), true);
+  assert.equal(game.status, 'intermission');
+  assert.equal(game.wave, 1);
+  assert.equal(game.revive('p2'), true);
+  assert.equal(game.status, 'intermission');
+  game.update(remaining - .001);
+  assert.equal(game.wave, 1);
+  game.update(.001);
+  assert.equal(game.wave, 2);
+  assert.ok(game.spawnQueue.length > 0);
+  assert.equal(game.events.filter(event => event.type === 'wave').length, 1);
+});
+
+test('repeated cooperative pause and resume freezes one shared break', () => {
+  const game = arena();
+  game.spawnQueue = [];
+  game.clearWave();
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const remaining = game.intermissionRemaining, time = game.time;
+    game.status = 'paused';
+    game.update(20, { p1: { moveX: 1 }, p2: { moveY: 1 } });
+    assert.equal(game.intermissionRemaining, remaining);
+    assert.equal(game.time, time);
+    game.status = 'intermission';
+    game.update(.4);
+  }
+  close(game.intermissionRemaining, 1.8);
+  game.update(1.8);
+  assert.equal(game.wave, 2);
+  assert.equal(game.events.filter(event => event.type === 'wave').length, 1);
 });
 
 test('reviving a fallen teammate preserves the survivor projectiles, grenades, ammo and held-input state', () => {

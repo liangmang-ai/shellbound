@@ -179,7 +179,9 @@ test('grenade detonates nearby barrel chains and prevents a defeated charging bo
   game.update(1 / 60);
   assert.ok(boss.hp <= 0);
   assert.equal(game.kills, 1);
-  assert.equal(game.wave, 2, 'barrels do not hold the completed wave open');
+  assert.equal(game.status, 'intermission', 'barrels do not hold the completed wave open');
+  assert.equal(game.wave, 1);
+  assert.equal(game.intermissionRemaining, 3);
   assert.equal(game.events.some(event => event.type === 'bossVolley'), false);
   assert.equal(game.events.filter(event => event.type === 'barrelExplosion').length, 2);
   assert.equal(game.barrels[0].active, false, 'wave advance preserves station cooldown');

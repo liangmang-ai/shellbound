@@ -87,6 +87,32 @@ async function startedPair(t, options) {
   return context;
 }
 
+test('room display profiles are bounded, optional and never expose gateway identity or session fields', async t => {
+  let time = 10000;
+  const profile = { nickName: '蛋友🥚', avatarUrl: 'https://thirdwx.qlogo.cn/mmopen/avatar/132', openId: 'private-openid', sessionKey: 'private-session' };
+  const { host, guest, room } = await roomPair(t, { now: () => time }, { host: { profile } });
+  guest.send({ type: 'profile', profile: { nickName: '队友', avatarUrl: 'https://attacker.test/private.png' } });
+  const joined = await host.next(message => message.type === 'room' && message.players[1]?.profile?.nickName === '队友');
+  assert.match(joined.runId, /^[a-f0-9]{24}$/, 'a shared opaque run marker distinguishes reused room codes');
+  assert.equal(joined.runId, room.runId);
+  const guestRoom = await guest.next(message => message.type === 'room' && message.players[1]?.profile?.nickName === '队友');
+  assert.equal(guestRoom.runId, joined.runId, 'both teammates submit the same run marker');
+  assert.deepEqual(joined.players[0].profile, { nickName: '蛋友🥚', avatarUrl: profile.avatarUrl });
+  assert.deepEqual(joined.players[1].profile, { nickName: '队友', avatarUrl: '' });
+  assert.equal(JSON.stringify(joined).includes('private-'), false);
+  assert.deepEqual(Object.keys(joined.players[0]).sort(), ['connected', 'id', 'profile']);
+  guest.send({ type: 'profile', profile: { nickName: '过快更改' } });
+  assert.match((await guest.next('error')).message, /太快/);
+  assert.equal([...room.members.values()][1].profile.nickName, '队友');
+  guest.send({ type: 'profile', profile: null });
+  const cleared = await host.next(message => message.type === 'room' && message.players[1]?.profile === null);
+  assert.equal(cleared.players[1].profile, null, 'clearing consent is allowed immediately');
+  time += 2001;
+  guest.send({ type: 'profile', profile: { nickName: '新队友' } });
+  const updated = await host.next(message => message.type === 'room' && message.players[1]?.profile?.nickName === '新队友');
+  assert.equal(updated.players[0].profile.nickName, '蛋友🥚', 'a participant only edits their own display data');
+});
+
 test('server health is bounded JSON and unknown HTTP routes and upgrade paths are rejected', async t => {
   const { port, connect } = await setup(t);
   const response = await fetch(`http://127.0.0.1:${port}/healthz`);

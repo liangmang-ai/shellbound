@@ -22,7 +22,11 @@ test('rebuilding an imported WeChat project preserves its repository and local s
     for (const [name, content] of preserved) assert.equal(await readFile(join(wechatOutput, name), 'utf8'), content, name);
     assert.ok((await readFile(join(wechatOutput, 'game.js'), 'utf8')).length > 1000, 'a complete generated bundle replaces the old file');
     assert.ok((await readFile(join(webOutput, 'app.js'), 'utf8')).length > 1000);
-    assert.ok(JSON.parse(await readFile(join(wechatOutput, 'game.json'), 'utf8')));
+    const gameConfig = JSON.parse(await readFile(join(wechatOutput, 'game.json'), 'utf8'));
+    assert.equal(gameConfig.openDataContext, 'open-data');
+    const openDataBundle = await readFile(join(wechatOutput, gameConfig.openDataContext, 'index.js'), 'utf8');
+    assert.ok(openDataBundle.length > 1000, 'the configured open-data domain has an independent generated entry');
+    assert.equal(/require\(['"]\.\.\//.test(openDataBundle), false, 'the isolated domain does not rely on parent imports');
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

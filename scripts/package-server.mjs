@@ -8,7 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const execute = promisify(execFile);
 const files = [
   'server/server.mjs', 'server/package.json', 'server/package-lock.json',
-  'src/game.js', 'src/coop-game.js',
+  'src/game.js', 'src/coop-game.js', 'src/profile.js',
 ];
 
 export async function packageServer({ outputDir = resolve(root, 'artifacts/shellbound-coop-server'),

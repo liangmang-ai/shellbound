@@ -35,6 +35,15 @@ export async function buildProject({ webOutput = resolve(root, 'dist/web'), wech
       outfile: resolve(wechatOutput, 'game.js'),
       legalComments: 'none',
     }),
+    build({
+      absWorkingDir: root,
+      entryPoints: ['wechat/open-data/index.js'],
+      bundle: true,
+      format: 'iife',
+      target: 'es2019',
+      outfile: resolve(wechatOutput, 'open-data/index.js'),
+      legalComments: 'none',
+    }),
     copyFile(resolve(root, 'web/index.html'), resolve(webOutput, 'index.html')),
     copyFile(resolve(root, 'wechat/game.json'), resolve(wechatOutput, 'game.json')),
     copyFile(resolve(root, 'wechat/project.config.json'), resolve(wechatOutput, 'project.config.json'), constants.COPYFILE_EXCL)

@@ -1,5 +1,6 @@
 import { createApp } from '../src/app.js';
 import { createAudio } from '../src/audio.js';
+import { createSocial } from '../src/social.js';
 
 const canvas = wx.createCanvas();
 const getSize = () => {
@@ -28,7 +29,8 @@ const storage = {
   },
 };
 const audio = createAudio({ platform: 'wechat', wxApi: wx });
-const app = createApp({ canvas, ...getSize(), storage, platform: 'wechat', audio, wxApi: wx });
+const social = createSocial({ platform: 'wechat', wxApi: wx });
+const app = createApp({ canvas, ...getSize(), storage, platform: 'wechat', audio, wxApi: wx, social });
 const convertTouches = (event) => (event.changedTouches || event.touches || []).map((touch) => ({
   id: touch.identifier,
   x: touch.clientX ?? touch.pageX,
@@ -68,6 +70,7 @@ const start = () => {
 wx.onHide(() => {
   active = false;
   app.pause();
+  social.hideProfileButton();
   if (frameId !== null) cancelFrame(frameId);
   frameId = null;
 });

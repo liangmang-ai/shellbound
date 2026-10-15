@@ -126,10 +126,14 @@ test('clearing wave two guarantees shotgun unlock and slot six can equip it', ()
   const game = new Game();
   game.spawnQueue = [];
   game.clearWave();
+  assert.equal(game.wave, 1);
+  game.update(3);
   assert.equal(game.wave, 2);
   assert.equal(game.player.weapons.shotgun, undefined);
   game.spawnQueue = [];
   game.clearWave();
+  assert.equal(game.wave, 2);
+  game.update(3);
   assert.equal(game.wave, 3);
   assert.ok(game.player.weapons.shotgun);
   assert.ok(game.pickups.some(pickup => pickup.type === 'weapon' && pickup.weaponId === 'shotgun' && pickup.guaranteed));

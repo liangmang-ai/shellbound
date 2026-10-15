@@ -62,9 +62,11 @@ export class CoopGame extends Game {
   }
 
   update(dt, inputs = {}) {
-    dt = Math.min(.1, Math.max(0, Number.isFinite(dt) ? dt : 0));
+    const elapsed = Math.max(0, Number.isFinite(dt) ? dt : 0);
+    dt = Math.min(.1, elapsed);
     this.events = [];
-    if (dt <= 0 || this.status === 'dead' || this.status === 'won') return;
+    if (dt <= 0 || !['playing', 'intermission'].includes(this.status)) return;
+    const wasIntermission = this.status === 'intermission';
     this.time += dt;
     this.updateMap(dt);
     for (const player of this.livingPlayers()) {
@@ -88,6 +90,7 @@ export class CoopGame extends Game {
     }
     if (this.livingPlayers().length === 0) this.status = 'dead';
     else if (this.status === 'playing' && this.spawnQueue.length === 0 && this.enemies.length === 0) this.clearWave();
+    if (wasIntermission) this.updateIntermission(elapsed);
   }
 
   updatePickups(dt) {
@@ -109,7 +112,7 @@ export class CoopGame extends Game {
     const firstEvent = this.events.length;
     const cleared = super.clearWave();
     if (!cleared) return false;
-    // The base implementation awards p1 and advances the shared wave. Mirror only
+    // The base implementation awards p1 and starts the shared break. Mirror only
     // permanent progression; the physical reward drops remain shared pickups.
     for (const event of this.events.slice(firstEvent)) if (event.type === 'unlock' && !event.playerId) {
       event.playerId = 'p1';
@@ -145,7 +148,7 @@ export class CoopGame extends Game {
     this.events = events.concat(revivalEvents);
     this.bullets = bullets;
     this.grenades = grenades;
-    this.status = revived ? 'playing' : priorStatus;
+    if (!revived || priorStatus !== 'dead') this.status = priorStatus;
     return revived;
   }
 
@@ -160,6 +163,7 @@ export class CoopGame extends Game {
       enemies: this.enemies, bullets: this.bullets, grenades: this.grenades,
       pickups: this.pickups, effects: this.effects, events: this.events,
       wave: this.wave, waveKills: this.waveKills, waveTotal: this.waveTotal,
+      intermissionRemaining: this.intermissionRemaining,
       score: this.score, kills: this.kills, time: this.time,
       revivesRemaining: player.revivesRemaining,
       status: player.hp <= 0 ? 'dead' : this.status, teamStatus: this.status,

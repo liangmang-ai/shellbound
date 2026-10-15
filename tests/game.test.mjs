@@ -5,6 +5,13 @@ import { Game, MAPS, WEAPONS, segmentRoundedRect } from '../src/game.js';
 const tick = (game, seconds, input = {}) => {
   for (let time = 0; time < seconds; time += 1 / 60) game.update(1 / 60, input);
 };
+const advance = (game, seconds, input = {}) => {
+  for (let remaining = seconds; remaining > 1e-9;) {
+    const dt = Math.min(.1, remaining);
+    game.update(dt, input);
+    remaining -= dt;
+  }
+};
 const enemy = (game, props = {}) => {
   const item = { id: game.nextId++, x: 740, y: 380, radius: 17, hp: 40, maxHp: 40,
     type: 'grunt', speed: 0, damage: 12, angle: 0, hitFlash: 0, ...props };
@@ -132,33 +139,41 @@ test('duplicate weapon drops fill the matching ammo without forcing a weapon cha
   assert.equal(game.player.weapons.rifle.reserve, WEAPONS.rifle.reserveMax);
 });
 
-test('wave cleanup immediately starts the next wave, clears live attacks and grants supplies', () => {
+test('wave cleanup immediately clears attacks and grants supplies before a three second break', () => {
   const game = new Game();
   for (let wave = 1; wave <= 7; wave++) {
     game.spawnQueue = [];
     game.enemies = [];
     game.bullets.push({ life: 1 });
     game.grenades.push({ fuse: 1 });
-    game.clearWave();
-    assert.equal(game.status, 'playing');
-    assert.equal(game.wave, wave + 1);
-    assert.ok(game.spawnQueue.length > 0);
+    assert.equal(game.clearWave(), true);
+    assert.equal(game.status, 'intermission');
+    assert.equal(game.wave, wave);
+    assert.equal(game.intermissionRemaining, 3);
+    assert.equal(game.spawnQueue.length, 0);
     assert.equal(game.bullets.length, 0);
     assert.equal(game.grenades.length, 0);
     assert.ok(game.pickups.some(pickup => pickup.guaranteed && pickup.type === 'grenade'));
+    assert.equal(game.clearWave(), false, 'the break cannot award the same wave twice');
+    assert.equal(game.startNextWave(), false, 'a direct call cannot bypass the countdown');
+    advance(game, 3);
+    assert.equal(game.status, 'playing');
+    assert.equal(game.wave, wave + 1);
+    assert.ok(game.spawnQueue.length > 0);
   }
   assert.equal(game.wave, 8);
   assert.deepEqual(Object.keys(game.player.weapons), ['pistol', 'smg', 'shotgun', 'rifle', 'lmg', 'sniper']);
 });
 
-test('killing the last enemy advances in the same update and preserves player state and input', () => {
+test('killing the last enemy starts a full break and preserves player state and input', () => {
   const game = new Game();
   game.spawnQueue = [];
   enemy(game, { x: 700, hp: 1 });
   game.update(1 / 60, { shoot: true, aimX: 740, aimY: 380 });
   assert.equal(game.kills, 1);
-  assert.equal(game.wave, 2);
-  assert.equal(game.status, 'playing');
+  assert.equal(game.wave, 1);
+  assert.equal(game.status, 'intermission');
+  assert.equal(game.intermissionRemaining, 3, 'the clearing frame does not shorten the break');
   assert.equal(game.player.hp, 100);
   assert.equal(game.player.shield, 35);
   assert.equal(game.player.grenades, 3);
@@ -168,12 +183,97 @@ test('killing the last enemy advances in the same update and preserves player st
   assert.deepEqual(game.events.filter(event => ['waveClear', 'unlock', 'wave'].includes(event.type)), [
     { type: 'waveClear', wave: 1 },
     { type: 'unlock', weaponId: 'smg' },
-    { type: 'wave', wave: 2 },
   ]);
   const x = game.player.x;
   game.update(1 / 60, { moveX: 1 });
   assert.ok(game.player.x > x);
-  assert.equal(game.wave, 2, 'the new spawn queue prevents clearing another wave immediately');
+  assert.equal(game.wave, 1);
+  advance(game, 3 - 1 / 60);
+  assert.equal(game.wave, 2);
+  assert.equal(game.status, 'playing');
+  assert.deepEqual(game.events.filter(event => event.type === 'wave'), [{ type: 'wave', wave: 2 }]);
+});
+
+test('the countdown counts 3, 2, 1 and advances exactly once at zero while allowing pickup and movement', () => {
+  const game = new Game();
+  assert.equal(game.wave, 1, 'the first wave starts immediately');
+  assert.equal(game.intermissionRemaining, 0);
+  game.spawnQueue = [];
+  game.clearWave();
+  game.pickups = [];
+  game.player.shield = 0;
+  game.spawnPickup('shield', game.player.x, game.player.y);
+  const x = game.player.x;
+  game.update(.1, { moveX: 1, shoot: true, grenade: true });
+  assert.ok(game.player.x > x);
+  assert.equal(game.player.shield, 40);
+  assert.equal(game.player.weapons.pistol.clip, 12);
+  assert.equal(game.player.grenades, 3);
+  assert.equal(game.bullets.length, 0);
+  advance(game, .9);
+  assert.equal(Math.ceil(game.intermissionRemaining), 2);
+  advance(game, 1);
+  assert.equal(Math.ceil(game.intermissionRemaining), 1);
+  advance(game, .999);
+  assert.equal(game.wave, 1);
+  assert.equal(game.status, 'intermission');
+  game.update(.001);
+  assert.equal(game.wave, 2);
+  assert.equal(game.intermissionRemaining, 0);
+  assert.equal(game.spawnTimer, .25, 'new wave receives its full initial spawn delay');
+  assert.equal(game.events.filter(event => event.type === 'wave').length, 1);
+  game.update(.1);
+  assert.equal(game.wave, 2);
+  assert.equal(game.events.some(event => event.type === 'wave'), false);
+});
+
+test('large frame deltas accumulate for an existing break without enlarging physics or skipping a wave', () => {
+  const game = new Game();
+  game.spawnQueue = [];
+  game.update(10);
+  assert.equal(game.intermissionRemaining, 3, 'a stalled clearing frame still starts a full break');
+  const x = game.player.x, time = game.time;
+  game.update(1.25, { moveX: 1 });
+  assert.equal(game.intermissionRemaining, 1.75);
+  assert.ok(game.player.x - x <= game.player.speed * .1 + 1e-7);
+  assert.ok(game.time - time <= .1 + 1e-7);
+  game.update(20);
+  assert.equal(game.wave, 2);
+  assert.equal(game.intermissionRemaining, 0);
+  assert.ok(game.spawnQueue.length > 0);
+  assert.equal(game.events.filter(event => event.type === 'wave').length, 1);
+});
+
+test('pause and death freeze the break and revival resumes its remaining time', () => {
+  const game = new Game();
+  game.spawnQueue = [];
+  game.clearWave();
+  game.update(.4);
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const remaining = game.intermissionRemaining, time = game.time, x = game.player.x;
+    game.status = 'paused';
+    game.update(10, { moveX: 1 });
+    assert.equal(game.intermissionRemaining, remaining);
+    assert.equal(game.time, time);
+    assert.equal(game.player.x, x);
+    game.status = 'intermission';
+    game.update(.2);
+  }
+  const remaining = game.intermissionRemaining;
+  game.player.hp = 0;
+  game.update(.1);
+  assert.equal(game.status, 'dead');
+  assert.equal(game.intermissionRemaining, remaining);
+  game.update(100);
+  assert.equal(game.intermissionRemaining, remaining);
+  assert.equal(game.revive(), true);
+  assert.equal(game.status, 'intermission');
+  assert.equal(game.wave, 1);
+  game.update(remaining - .001);
+  assert.equal(game.wave, 1);
+  game.update(.001);
+  assert.equal(game.wave, 2);
+  assert.ok(game.spawnQueue.length > 0, 'reviving a break cannot manufacture an empty playing wave');
 });
 
 test('clearing the tenth wave starts the eleventh and death still stops simulation', () => {
@@ -181,6 +281,9 @@ test('clearing the tenth wave starts the eleventh and death still stops simulati
   game.wave = 10;
   game.spawnQueue = []; game.enemies = [];
   game.update(1 / 60);
+  assert.equal(game.status, 'intermission');
+  assert.equal(game.wave, 10);
+  advance(game, 3);
   assert.equal(game.status, 'playing');
   assert.equal(game.wave, 11);
   assert.ok(game.spawnQueue.length > 0);

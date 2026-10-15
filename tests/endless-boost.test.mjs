@@ -144,6 +144,9 @@ test('endless waves keep increasing both mobs and bosses and grant supplies afte
       const game = new Game({ seed: 53, difficultyId });
       game.wave = wave; game.spawnQueue = []; game.enemies = [];
       game.update(.01);
+      assert.equal(game.wave, wave); assert.equal(game.status, 'intermission');
+      assert.equal(game.intermissionRemaining, 3);
+      game.update(3);
       assert.equal(game.wave, wave + 1); assert.equal(game.status, 'playing');
       assert.equal(game.waveTotal, getWaveComposition(wave + 1, difficultyId).total);
       assert.ok(game.pickups.some(item => item.type === 'ammo' && item.guaranteed));
@@ -166,6 +169,8 @@ test('lazy queues stay bounded for very late waves, deterministic peeks do not l
   assert.equal(game.spawnQueue.length, initial - 1);
   game.spawnQueue = [];
   game.clearWave();
+  assert.equal(game.wave, 1000000000);
+  game.update(3);
   assert.equal(game.wave, 1000000001, 'custom queue replacement has no hidden pending population');
   const small = new Game({ seed: 101 });
   small.wave = 9; small.status = 'intermission'; small.startNextWave();
